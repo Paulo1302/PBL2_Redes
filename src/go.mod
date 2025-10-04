@@ -1,4 +1,4 @@
-module test
+module Server
 
 go 1.24.5
 
