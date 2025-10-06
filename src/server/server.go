@@ -1,28 +1,18 @@
 package main
 
 import (
-	"encoding/json"
-	"fmt"
 	"net/http"
-	"strconv"
-	"time"
-
+	
 	"github.com/gin-gonic/gin"
-	"github.com/nats-io/nats.go"
+	"server/API"
 )
 
 
-func pubSub(serverNumber int){
-	url := "nats://127.0.0.1:" + strconv.Itoa(serverNumber + 4222)
-	fmt.Println(url)
-	nc,_ := nats.Connect(nats.DefaultURL)
+func clientCommunication(serverNumber int){
+	nc := pubsub.BrokerConnect(serverNumber)
 	defer nc.Close()
-	var payload map[string]int64
 	
-	nc.Subscribe("topic.ping", func(m *nats.Msg) {
-		json.Unmarshal(m.Data, &payload)
-		fmt.Println("atraso:", time.Now().UnixMilli()-payload["send_time"], "ms")
-	})
+	pubsub.ReplyPing(nc)
 
 	select {}
 }
@@ -46,6 +36,6 @@ func main(){
 	// Server will listen on 0.0.0.0:8080 (localhost:8080 on Windows)
 	go r.Run()
 
-	go pubSub(0)
+	go clientCommunication(0)
 	select {}
 }
