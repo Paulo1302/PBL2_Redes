@@ -23,7 +23,11 @@ func RequestPing(nc *nats.Conn) {
 			"send_time": time.Now().UnixMilli(),
 		}
 	data,_ := json.Marshal(msg)
-	response,_ := nc.Request("topic.ping", data, time.Second)
+	response,err := nc.Request("topic.ping", data, time.Second)
+	if err != nil{
+		fmt.Println(err.Error())
+		return
+	}
 	fmt.Println("Enviado:", msg)
 	json.Unmarshal(response.Data, &msg)
 	fmt.Println("Resposta:",msg["response_time"] - msg["send_time"])
