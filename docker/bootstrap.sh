@@ -1,39 +1,54 @@
 #!/bin/bash
 
-# Script para inicialização manual de servidores
+# Script de bootstrap simplificado que delega a orquestração ao Docker Compose.
+echo " Card Game Distributed Servers Bootstrap"
+echo "=========================================="
 
-echo "Card Game Distributed Servers Bootstrap"
+set -e # Termina o script imediatamente se um comando falhar.
 
-# Parar containers existentes
-docker-compose -f docker/docker-compose.yml down
+# Configurar cores para output
+GREEN='\033[0;32m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
 
-# Construir imagens
+log_info() {
+    echo -e "${BLUE}[INFO]${NC} $1"
+}
+
+log_success() {
+    echo -e "${GREEN}[SUCCESS]${NC} $1"
+}
+
+# Parar e limpar containers existentes
+log_info "A parar e a remover quaisquer serviços existentes..."
+docker-compose -f docker/docker-compose.yml down --volumes
+
+# Construir as imagens Docker
+log_info "A construir as imagens Docker..."
 docker-compose -f docker/docker-compose.yml build
 
-# Iniciar broker NATS primeiro
-echo "Starting NATS broker..."
-docker-compose -f docker/docker-compose.yml up -d nats-broker
+# Iniciar todo o cluster
+# O Docker Compose irá respeitar o 'depends_on' e 'condition: service_healthy'
+# para iniciar os serviços na ordem correta.
+log_info "A iniciar o cluster... O Docker Compose irá gerir a ordem de arranque."
+docker-compose -f docker/docker-compose.yml up -d
+
+log_success "Comando 'up' concluído. A aguardar que os serviços estabilizem..."
+
+# Aguarda um pouco e depois verifica o estado final
 sleep 5
-
-# Iniciar servidor bootstrap
-echo "Starting bootstrap server..."
-docker-compose -f docker/docker-compose.yml up -d game-server-1
-sleep 10
-
-# Iniciar servidores adicionais
-echo "Starting additional servers..."
-docker-compose -f docker/docker-compose.yml up -d game-server-2 game-server-3
-
-# Aguardar inicialização
-sleep 10
-
-# Verificar status
-echo "Checking server status..."
+echo ""
+echo " A verificar o estado final dos servidores..."
+echo "=========================================="
 curl -s http://localhost:8081/health | jq .
 curl -s http://localhost:8082/health | jq .
 curl -s http://localhost:8083/health | jq .
 
-echo "Cluster setup complete!"
-echo "Server 1: http://localhost:8081"
-echo "Server 2: http://localhost:8082"
-echo "Server 3: http://localhost:8083"
+echo ""
+echo " Configuração do cluster concluída!"
+echo "=============================="
+echo " Endpoints Disponíveis:"
+echo "  • Monitor NATS: http://localhost:8222"
+echo "  • Servidor 1:   http://localhost:8081"
+echo "  • Servidor 2:   http://localhost:8082"
+echo "  • Servidor 3:   http://localhost:8083"

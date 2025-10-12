@@ -1,5 +1,3 @@
-version: '3.8'
-
 networks:
   card-game-network:
     driver: bridge
@@ -9,6 +7,7 @@ networks:
         - subnet: 172.20.0.0/16
 
 services:
+  # NATS broker para pub/sub
   nats-broker:
     image: nats:latest
     command: --port 4222 --http_port 8222
@@ -18,7 +17,14 @@ services:
     networks:
       card-game-network:
         ipv4_address: 172.20.0.10
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8222/varz"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
+  # Servidor 1 (Bootstrap)
   game-server-1:
     build:
       context: ..
@@ -29,8 +35,9 @@ services:
       - RAFT_PORT=7000
       - NATS_PORT=4222
       - IS_BOOTSTRAP=true
-      - KNOWN_PEERS=172.20.0.12:8080:7000,172.20.0.13:8080:7000
+      - KNOWN_PEERS=172.20.0.12:8080,172.20.0.13:8080
       - CLUSTER_NAME=card-game-cluster
+      - VERSION=1.0.0
     ports:
       - "8081:8080"
       - "7001:7000"
@@ -38,8 +45,10 @@ services:
       card-game-network:
         ipv4_address: 172.20.0.11
     depends_on:
-      - nats-broker
+      nats-broker:
+        condition: service_healthy
 
+  # Servidor 2
   game-server-2:
     build:
       context: ..
@@ -50,8 +59,9 @@ services:
       - RAFT_PORT=7000
       - NATS_PORT=4222
       - IS_BOOTSTRAP=false
-      - KNOWN_PEERS=172.20.0.11:8080:7000,172.20.0.13:8080:7000
+      - KNOWN_PEERS=172.20.0.11:8080,172.20.0.13:8080
       - CLUSTER_NAME=card-game-cluster
+      - VERSION=1.0.0
     ports:
       - "8082:8080"
       - "7002:7000"
@@ -59,8 +69,11 @@ services:
       card-game-network:
         ipv4_address: 172.20.0.12
     depends_on:
-      - nats-broker
+      game-server-1:
+        condition: service_healthy
 
+
+  # Servidor 3
   game-server-3:
     build:
       context: ..
@@ -71,8 +84,9 @@ services:
       - RAFT_PORT=7000
       - NATS_PORT=4222
       - IS_BOOTSTRAP=false
-      - KNOWN_PEERS=172.20.0.11:8080:7000,172.20.0.12:8080:7000
+      - KNOWN_PEERS=172.20.0.11:8080,172.20.0.12:8080
       - CLUSTER_NAME=card-game-cluster
+      - VERSION=1.0.0
     ports:
       - "8083:8080"
       - "7003:7000"
@@ -80,4 +94,5 @@ services:
       card-game-network:
         ipv4_address: 172.20.0.13
     depends_on:
-      - nats-broker
+      game-server-1:
+        condition: service_healthy
