@@ -4,20 +4,31 @@ import (
 	"time"
 
 	"client/API"
+
+	"github.com/charmbracelet/bubbletea"
 )
 
-func pubSub(serverNumber int) {
+//PLACEHOLDER
+type model struct{
+	tea.ExecCommand
+}
+
+
+
+func pubSub(serverNumber int, htb *int64) {
 	nc := pubsub.BrokerConnect(serverNumber)
 	defer nc.Close()
 
-	for range 10 {
-		pubsub.RequestPing(nc)
-		time.Sleep(2 * time.Second)
-	}
+	pubsub.Heartbeat(nc, htb)
+	
+	select {}
 }
 
 func main() {
-	
-	pubSub(0)
+
+	var value = time.Now().UnixMilli()
+	go pubSub(0, &value)
+
+	for time.Now().UnixMilli() - value < 1000{};
 	
 }

@@ -31,5 +31,16 @@ func RequestPing(nc *nats.Conn) {
 	fmt.Println("Enviado:", msg)
 	json.Unmarshal(response.Data, &msg)
 	fmt.Println("Resposta:",msg["response_time"] - msg["send_time"])
+}
+
+
+func Heartbeat(nc *nats.Conn, value *int64) {
+	ping := make(map[string]int64)
+	nc.Subscribe("topic.heartbeat", func(msg *nats.Msg) {
+		json.Unmarshal(msg.Data, &ping)
+		*value = ping["server_ping"]
+	})
+
+	select {}
 
 }
