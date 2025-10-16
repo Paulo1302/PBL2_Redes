@@ -1,9 +1,10 @@
 package pubsub
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
-	"encoding/json"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -33,6 +34,197 @@ func RequestPing(nc *nats.Conn) {
 	fmt.Println("Resposta:",msg["response_time"] - msg["send_time"])
 }
 
+func RequestCreateAccount(nc *nats.Conn) int {
+	response,err := nc.Request("topic.createAccount", nil, time.Second)
+	if err != nil{
+		fmt.Println(err.Error())
+		return 0
+	}
+	msg := make(map[string]int)
+	fmt.Println("Enviado:", msg)
+	json.Unmarshal(response.Data, &msg)
+	return msg["client_ID"]
+}
+
+
+func RequestLogin(nc *nats.Conn, id int) (int,error) {
+	msg := map[string]any{
+			"client_ID": id,
+		}
+	data,_ := json.Marshal(msg)
+	response,err := nc.Request("topic.login", data, time.Second)
+	if err != nil{
+		fmt.Println(err.Error())
+		return 0, err
+	}
+	fmt.Println("Enviado:", msg)
+	json.Unmarshal(response.Data, &msg)
+	
+	if msg["err"] != nil {
+		err = errors.New(msg["err"].(string))
+	}else {
+		err = nil
+	}
+	
+	return msg["result"].(int), err
+}
+
+
+func RequestOpenPack(nc *nats.Conn, id int) ([]int,error) {
+	msg := map[string]any{
+			"client_ID": id,
+		}
+	data,_ := json.Marshal(msg)
+	response,err := nc.Request("topic.openPack", data, time.Second)
+
+	if err != nil{
+		fmt.Println(err.Error())
+		return nil, err
+	}
+
+	
+	fmt.Println("Enviado:", msg)
+	json.Unmarshal(response.Data, &msg)
+
+	if msg["err"] != nil {
+		err = errors.New(msg["err"].(string))
+	}else {
+		err = nil
+	}
+
+	return msg["result"].([]int), err
+}
+
+
+func RequestSeeCards(nc *nats.Conn, id int) ([]int,error) {
+	msg := map[string]any{
+			"client_ID": id,
+		}
+	data,_ := json.Marshal(msg)
+	response,err := nc.Request("topic.seeCards", data, time.Second)
+
+	if err != nil{
+		fmt.Println(err.Error())
+		return nil, err
+	}
+
+	
+	fmt.Println("Enviado:", msg)
+	json.Unmarshal(response.Data, &msg)
+	
+	if msg["err"] != nil {
+		err = errors.New(msg["err"].(string))
+	}else {
+		err = nil
+	}
+
+	return msg["result"].([]int), err
+}
+
+
+func RequestFindMatch(nc *nats.Conn, id int) (int,error) {
+
+	payload := make(map[string]any)
+
+	var enemyId *int
+	
+	onQueue := make(chan(int))
+
+	nc.Subscribe("topic.matchmaking", func(msg *nats.Msg) {
+
+		json.Unmarshal(msg.Data, &payload)
+		if payload["client_ID"].(int) != id{
+			return
+		}
+		if payload["err"] != nil{
+			*enemyId = 0
+			onQueue <- -1
+			select {}
+		}
+		
+		*enemyId = payload["enemy_ID"].(int)
+		nc.Publish(msg.Reply, msg.Data)
+		onQueue <- 0
+		select {}
+	})
+
+	msg := map[string]any{
+			"client_ID": id,
+		}
+	data,_ := json.Marshal(msg)
+	response,err := nc.Request("topic.findMatch", data, time.Second)
+
+	if err != nil{
+		fmt.Println(err.Error())
+		return 0, err
+	}
+
+	json.Unmarshal(response.Data, &msg)
+
+	if msg["err"] != nil {
+		return 0, errors.New(msg["err"].(string))
+	}
+
+	if ((<- onQueue) == -1){
+		return 0, errors.New("MATCHMAKING QUEUE ERROR")
+	}
+
+	return *enemyId, nil
+}
+
+
+func RequestTradeCards(nc *nats.Conn, id int, card int) (int,error) {
+
+	payload := make(map[string]any)
+
+	var tradedCard *int
+	
+	onQueue := make(chan(int))
+
+	nc.Subscribe("topic.listenTrade", func(msg *nats.Msg) {
+
+		json.Unmarshal(msg.Data, &payload)
+		if payload["client_ID"].(int) != id{
+			return
+		}
+		if payload["err"] != nil{
+			*tradedCard = 0
+			onQueue <- -1
+			select {}
+		}
+		
+		*tradedCard = payload["new_card"].(int)
+		nc.Publish(msg.Reply, msg.Data)
+		onQueue <- 0
+		select {}
+	})
+
+	msg := map[string]any{
+			"client_ID": id,
+			"card": card,
+		}
+	data,_ := json.Marshal(msg)
+	response,err := nc.Request("topic.sendTrade", data, time.Second)
+
+	if err != nil{
+		fmt.Println(err.Error())
+		return 0, err
+	}
+
+	json.Unmarshal(response.Data, &msg)
+
+	if msg["err"] != nil {
+		return 0, errors.New(msg["err"].(string))
+	}
+
+	if ((<- onQueue) == -1){
+		return 0, errors.New("TRADE QUEUE ERROR")
+	}
+
+	return *tradedCard, nil
+}
+
+
 
 func Heartbeat(nc *nats.Conn, value *int64) {
 	ping := make(map[string]int64)
@@ -41,6 +233,5 @@ func Heartbeat(nc *nats.Conn, value *int64) {
 		*value = ping["server_ping"]
 	})
 
-	select {}
 
 }
