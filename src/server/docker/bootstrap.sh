@@ -19,33 +19,38 @@ log_success() {
     echo -e "${GREEN}[SUCCESS]${NC} $1"
 }
 
+# Caminho corrigido para o docker-compose.yml
+COMPOSE_FILE="docker/docker-compose.yml"
+
 # Parar e limpar containers existentes
 log_info "A parar e a remover quaisquer serviços existentes..."
-docker-compose -f docker/docker-compose.yml down --volumes
+docker-compose -f ${COMPOSE_FILE} down --volumes
 
 # Construir as imagens Docker
 log_info "A construir as imagens Docker..."
-docker-compose -f docker/docker-compose.yml build
+docker-compose -f ${COMPOSE_FILE} build
 
 # Iniciar todo o cluster
-# O Docker Compose irá respeitar o 'depends_on' e 'condition: service_healthy'
-# para iniciar os serviços na ordem correta.
 log_info "A iniciar o cluster... O Docker Compose irá gerir a ordem de arranque."
-docker-compose -f docker/docker-compose.yml up -d
+docker-compose -f ${COMPOSE_FILE} up -d
 
 log_success "Comando 'up' concluído. A aguardar que os serviços estabilizem..."
 
 # Aguarda um pouco e depois verifica o estado final
-sleep 5
+sleep 15 # Aumentar o sleep para aguardar o Raft e os healthchecks
 echo ""
 echo " A verificar o estado final dos servidores..."
 echo "=========================================="
-curl -s http://localhost:8081/health | jq .
-curl -s http://localhost:8082/health | jq .
-curl -s http://localhost:8083/health | jq .
+# O servidor 1 é o líder de bootstrap
+log_info "Servidor 1 (Líder potencial):"
+curl -s http://localhost:8081/status # A porta 8081 é a porta HOST do S1
+log_info "Servidor 2 (Seguidor potencial):"
+curl -s http://localhost:8082/status
+log_info "Servidor 3 (Seguidor potencial):"
+curl -s http://localhost:8083/status
 
 echo ""
-echo " Configuração do cluster concluída!"
+log_success "Configuração do cluster concluída!"
 echo "=============================="
 echo " Endpoints Disponíveis:"
 echo "  • Monitor NATS: http://localhost:8222"

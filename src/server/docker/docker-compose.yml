@@ -1,0 +1,165 @@
+networks:
+  card-game-network:
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.20.0.0/16
+
+services:
+  # O NATS CENTRALIZADO É REMOVIDO/SUBSTITUÍDO
+
+  # --- Broker NATS para Servidor 1 ---
+  nats-1:
+    image: nats:latest
+    command: -p 4222 # Apenas a porta interna
+    networks:
+      card-game-network:
+        ipv4_address: 172.20.0.10
+    healthcheck:
+      # NATS Healthcheck - Usaremos o comando nativo ping/info
+      test: ["CMD", "nats", "info", "-s", "nats://127.0.0.1:4222"] 
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+  # Servidor 1 (Bootstrap)
+  game-server-1:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    environment:
+      - SERVER_ID=server-1
+      - HTTP_PORT=8080
+      - RAFT_PORT=7000
+      - NATS_URL=nats-1:4222 # <--- CONECTA AO SEU PRÓPRIO BROKER
+      - IS_BOOTSTRAP=true
+      - KNOWN_PEERS=172.20.0.12:8080,172.20.0.13:8080
+      - CLUSTER_NAME=card-game-cluster
+      - VERSION=1.0.0
+    ports:
+      - "8081:8080"
+      - "7001:7000"
+    networks:
+      card-game-network:
+        ipv4_address: 172.20.0.11
+    depends_on:
+      nats-1: # <--- AGORA DEPENDE DO SEU PRÓPRIO BROKER
+        condition: service_healthy
+    # Healthcheck para o Servidor Go (agora é seguro)
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+
+  # --- Broker NATS para Servidor 2 ---
+  nats-2:
+    image: nats:latest
+    command: -p 4222
+    networks:
+      card-game-network:
+        ipv4_address: 172.20.0.20 # Novo IP
+    healthcheck:
+      test: ["CMD", "nats", "info", "-s", "nats://127.0.0.1:4222"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+  # Servidor 2
+  game-server-2:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    environment:
+      - SERVER_ID=server-2
+      - HTTP_PORT=8080
+      - RAFT_PORT=7000
+      - NATS_URL=nats-2:4222 # <--- CONECTA AO SEU PRÓPRIO BROKER
+      - IS_BOOTSTRAP=false
+      - KNOWN_PEERS=172.20.0.11:8080,172.20.0.13:8080
+      - CLUSTER_NAME=card-game-cluster
+      - VERSION=1.0.0
+    ports:
+      - "8082:8080"
+      - "7002:7000"
+    networks:
+      card-game-network:
+        ipv4_address: 172.20.0.12
+    depends_on:
+      nats-2: # <--- AGORA DEPENDE DO SEU PRÓPRIO BROKER
+        condition: service_healthy
+      game-server-1:
+        condition: service_healthy
+
+
+  # --- Broker NATS para Servidor 3 ---
+  nats-3:
+    image: nats:latest
+    command: -p 4222
+    networks:
+      card-game-network:
+        ipv4_address: 172.20.0.30 # Novo IP
+    healthcheck:
+      test: ["CMD", "nats", "info", "-s", "nats://127.0.0.1:4222"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+  # Servidor 3
+  game-server-3:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    environment:
+      - SERVER_ID=server-3
+      - HTTP_PORT=8080
+      - RAFT_PORT=7000
+      - NATS_URL=nats-3:4222 # <--- CONECTA AO SEU PRÓPRIO BROKER
+      - IS_BOOTSTRAP=false
+      - KNOWN_PEERS=172.20.0.11:8080,172.20.0.12:8080
+      - CLUSTER_NAME=card-game-cluster
+      - VERSION=1.0.0
+    ports:
+      - "8083:8080"
+      - "7003:7000"
+    networks:
+      card-game-network:
+        ipv4_address: 172.20.0.13
+    depends_on:
+      nats-3: # <--- AGORA DEPENDE DO SEU PRÓPRIO BROKER
+        condition: service_healthy
+      game-server-1:
+        condition: service_healthy
+
+  tests:
+      build:
+        context: . # O contexto é o diretório atual (src/server/)
+        dockerfile: docker/Dockerfile
+      image: raft-server-image # Reutiliza a imagem compilada
+      command: sh -c "sleep 20 && go test -v ./tests" # Roda o teste dentro do contêiner
+      # O comando é ajustado para rodar os testes que estão em ./tests (dentro do contêiner)
+      
+      depends_on:
+        game-server-1:
+          condition: service_healthy # Espera que o Líder potencial esteja saudável
+        game-server-2:
+          condition: service_healthy # Espera que os seguidores estejam saudáveis
+        game-server-3:
+          condition: service_healthy
+      
+      # O contêiner de testes não precisa de mapeamento de portas externas
+      # mas precisa da rede interna
+      networks:
+        card-game-network:
+      
+      # Para garantir que os testes acessem o código e as dependências:
+      volumes:
+        # Monta o diretório de trabalho local no contêiner para que o 'go test'
+        # possa acessar todos os arquivos e dependências Go.
+        - .:/app

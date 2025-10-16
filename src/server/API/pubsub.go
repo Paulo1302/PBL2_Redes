@@ -4,6 +4,7 @@ import (
     "encoding/json"
     "fmt"
     "log"
+    "os" // Adicionado para ler variáveis de ambiente
     "strconv"
     "time"
 
@@ -11,12 +12,20 @@ import (
 )
 
 // BrokerConnect conecta ao broker NATS com tratamento de erro robusto
+// O parâmetro serverNumber se torna redundante, mas mantemos por compatibilidade
 func BrokerConnect(serverNumber int) (*nats.Conn, error) {
-    url := "nats://127.0.0.1:" + strconv.Itoa(serverNumber+4222)
+    // 1. Tentar ler do ambiente (usar o endereço Docker)
+    url := os.Getenv("NATS_URL")
+    if url == "" {
+        // 2. Fallback para localhost (para testes locais ou caso a variável não exista)
+        url = "nats://127.0.0.1:" + strconv.Itoa(serverNumber+4222)
+    }
+
     fmt.Println("Connecting to NATS:", url)
     
     // Configuração com timeout e reconexão para robustez
     opts := []nats.Option{
+        // ... (opts permanecem os mesmos)
         nats.Name("CardGame-Server"),
         nats.Timeout(10 * time.Second),
         nats.ReconnectWait(2 * time.Second),
