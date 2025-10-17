@@ -1,6 +1,7 @@
 package pubsub
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,7 +14,7 @@ import (
 
 func BrokerConnect(serverNumber int) *nats.Conn {
 	url := "nats://127.0.0.1:" + strconv.Itoa(serverNumber + 4222)
-	fmt.Println(url)
+	//fmt.Println(url)
 	nc,_ := nats.Connect(url)
 	
 	return nc
@@ -224,6 +225,71 @@ func RequestTradeCards(nc *nats.Conn, id int, card int) (int,error) {
 	return *tradedCard, nil
 }
 
+func sendCards(nc *nats.Conn, id int, card int){
+	msg := map[string]any{
+			"client_ID": id,
+			"card": card,
+		}
+	data, _ := json.Marshal(msg)
+
+	nc.Publish("game.client", data)
+}
+
+func ManageGame(nc *nats.Conn, id int, card chan(int)) string{
+	gameResult := make(chan(string))
+	ctx, cancel := context.WithCancel(context.Background())
+	
+	go imAlive(nc, int64(id), ctx)
+
+	payload := make(map[string]any)
+
+	nc.Subscribe("game.server", func(msg *nats.Msg) {
+		
+		json.Unmarshal(msg.Data, &payload)
+		
+		if payload["err"] != nil {
+			card <- 0
+			gameResult <- "error" //erro, sai da fila
+			cancel()
+			return
+		}
+		if payload["client_ID"].(int) != id {
+			return
+		}
+		if payload["result"].(string) == "win"{
+			card <- payload["card"].(int)
+			gameResult <- "win" //vitoria
+			cancel()
+			return
+		}
+		if payload["result"].(string) == "lose"{
+			card <- payload["card"].(int)
+			gameResult <- "lose" //derrota
+			cancel()
+		}
+	})
+
+	return <- gameResult
+
+}
+
+func imAlive(nc *nats.Conn, id int64, ctx context.Context){
+	
+	for{
+		select {
+		case <-ctx.Done():
+			return
+		default:
+			msg := map[string]int64{
+				"client_id" : id,
+				"client_ping": time.Now().UnixMilli(),
+			}
+			data,_ := json.Marshal(msg)
+			nc.Publish("game.heartbeat", data)	
+		}
+	}
+
+}
 
 
 func Heartbeat(nc *nats.Conn, value *int64) {
@@ -232,6 +298,4 @@ func Heartbeat(nc *nats.Conn, value *int64) {
 		json.Unmarshal(msg.Data, &ping)
 		*value = ping["server_ping"]
 	})
-
-
 }

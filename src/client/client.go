@@ -5,14 +5,9 @@ import (
 
 	"client/API"
 
-	"github.com/charmbracelet/bubbletea"
 )
 
 //PLACEHOLDER
-type model struct{
-	tea.ExecCommand
-}
-
 
 
 func pubSub(serverNumber int, htb *int64) {
