@@ -20,26 +20,24 @@ func BrokerConnect(serverNumber int) *nats.Conn {
 	return nc
 }
 
-func RequestPing(nc *nats.Conn) {
+func RequestPing(nc *nats.Conn) int64 {
 	msg := map[string]int64{
 			"send_time": time.Now().UnixMilli(),
 		}
 	data,_ := json.Marshal(msg)
 	response,err := nc.Request("topic.ping", data, time.Second)
 	if err != nil{
-		fmt.Println(err.Error())
-		return
+		return -1
 	}
-	fmt.Println("Enviado:", msg)
 	json.Unmarshal(response.Data, &msg)
-	fmt.Println("Resposta:",msg["response_time"] - msg["send_time"])
+	return msg["server_ping"] - msg["send_time"]
 }
 
 func RequestCreateAccount(nc *nats.Conn) int {
 	response,err := nc.Request("topic.createAccount", nil, time.Second)
 	if err != nil{
 		fmt.Println(err.Error())
-		return 0
+		return 0 //se id == 0, não conseguiu criar usuário
 	}
 	msg := make(map[string]int)
 	fmt.Println("Enviado:", msg)
@@ -131,7 +129,7 @@ func RequestFindMatch(nc *nats.Conn, id int) (int,error) {
 	
 	onQueue := make(chan(int))
 
-	nc.Subscribe("topic.matchmaking", func(msg *nats.Msg) {
+	sub,_:=nc.Subscribe("topic.matchmaking", func(msg *nats.Msg) {
 
 		json.Unmarshal(msg.Data, &payload)
 		if payload["client_ID"].(int) != id{
@@ -140,14 +138,13 @@ func RequestFindMatch(nc *nats.Conn, id int) (int,error) {
 		if payload["err"] != nil{
 			*enemyId = 0
 			onQueue <- -1
-			select {}
 		}
 		
 		*enemyId = payload["enemy_ID"].(int)
 		nc.Publish(msg.Reply, msg.Data)
 		onQueue <- 0
-		select {}
 	})
+	
 
 	msg := map[string]any{
 			"client_ID": id,
@@ -156,6 +153,7 @@ func RequestFindMatch(nc *nats.Conn, id int) (int,error) {
 	response,err := nc.Request("topic.findMatch", data, time.Second)
 
 	if err != nil{
+		sub.Unsubscribe()
 		fmt.Println(err.Error())
 		return 0, err
 	}
@@ -163,13 +161,15 @@ func RequestFindMatch(nc *nats.Conn, id int) (int,error) {
 	json.Unmarshal(response.Data, &msg)
 
 	if msg["err"] != nil {
+		sub.Unsubscribe()
 		return 0, errors.New(msg["err"].(string))
 	}
 
 	if ((<- onQueue) == -1){
+		sub.Unsubscribe()
 		return 0, errors.New("MATCHMAKING QUEUE ERROR")
 	}
-
+	sub.Unsubscribe()
 	return *enemyId, nil
 }
 
@@ -182,7 +182,7 @@ func RequestTradeCards(nc *nats.Conn, id int, card int) (int,error) {
 	
 	onQueue := make(chan(int))
 
-	nc.Subscribe("topic.listenTrade", func(msg *nats.Msg) {
+	sub,_:=nc.Subscribe("topic.listenTrade", func(msg *nats.Msg) {
 
 		json.Unmarshal(msg.Data, &payload)
 		if payload["client_ID"].(int) != id{
@@ -191,13 +191,11 @@ func RequestTradeCards(nc *nats.Conn, id int, card int) (int,error) {
 		if payload["err"] != nil{
 			*tradedCard = 0
 			onQueue <- -1
-			select {}
 		}
 		
 		*tradedCard = payload["new_card"].(int)
 		nc.Publish(msg.Reply, msg.Data)
 		onQueue <- 0
-		select {}
 	})
 
 	msg := map[string]any{
@@ -208,6 +206,7 @@ func RequestTradeCards(nc *nats.Conn, id int, card int) (int,error) {
 	response,err := nc.Request("topic.sendTrade", data, time.Second)
 
 	if err != nil{
+		sub.Unsubscribe()
 		fmt.Println(err.Error())
 		return 0, err
 	}
@@ -215,17 +214,20 @@ func RequestTradeCards(nc *nats.Conn, id int, card int) (int,error) {
 	json.Unmarshal(response.Data, &msg)
 
 	if msg["err"] != nil {
+		sub.Unsubscribe()
 		return 0, errors.New(msg["err"].(string))
 	}
 
 	if ((<- onQueue) == -1){
+		sub.Unsubscribe()
 		return 0, errors.New("TRADE QUEUE ERROR")
 	}
-
+	
+	sub.Unsubscribe()
 	return *tradedCard, nil
 }
 
-func sendCards(nc *nats.Conn, id int, card int){
+func SendCards(nc *nats.Conn, id int, card int){
 	msg := map[string]any{
 			"client_ID": id,
 			"card": card,
@@ -243,7 +245,7 @@ func ManageGame(nc *nats.Conn, id int, card chan(int)) string{
 
 	payload := make(map[string]any)
 
-	nc.Subscribe("game.server", func(msg *nats.Msg) {
+	sub,_:=nc.Subscribe("game.server", func(msg *nats.Msg) {
 		
 		json.Unmarshal(msg.Data, &payload)
 		
@@ -268,8 +270,9 @@ func ManageGame(nc *nats.Conn, id int, card chan(int)) string{
 			cancel()
 		}
 	})
-
-	return <- gameResult
+	temp := <- gameResult
+	sub.Unsubscribe()
+	return temp
 
 }
 

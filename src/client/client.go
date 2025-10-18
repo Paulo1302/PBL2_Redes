@@ -14,7 +14,7 @@ func pubSub(serverNumber int, htb *int64) {
 	nc := pubsub.BrokerConnect(serverNumber)
 	defer nc.Close()
 
-	pubsub.Heartbeat(nc, htb)
+	go pubsub.Heartbeat(nc, htb)
 	
 	select {}
 }
@@ -22,7 +22,7 @@ func pubSub(serverNumber int, htb *int64) {
 func main() {
 
 	var value = time.Now().UnixMilli()
-	go pubSub(0, &value)
+	pubSub(0, &value)
 
 	for time.Now().UnixMilli() - value < 1000{};
 	
