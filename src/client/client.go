@@ -14,10 +14,7 @@ import (
 )
 
 
-func userMenu() {
-	nc := pubsub.BrokerConnect(0)
-	defer nc.Close()
-
+func userMenu(nc *nats.Conn) {
 	reader := bufio.NewReader(os.Stdin)
 
 	for {
@@ -168,24 +165,16 @@ func menuJogo(nc *nats.Conn, id int, cards []int, reader *bufio.Reader) {
 	fmt.Println("O resultado do jogo foi: ", <-gameResult)
 }
 
-
-
-func setupUser(serverNumber int, htb *int64) {
-	nc := pubsub.BrokerConnect(serverNumber)
-	defer nc.Close()
-
-	go pubsub.Heartbeat(nc, htb)
-	
-	select {}
-}
-
 func main() {
 
-	var value = time.Now().UnixMilli()
-	setupUser(0, &value)
+	var htb = time.Now().UnixMilli()
+	
+	nc := pubsub.BrokerConnect(0)
+	defer nc.Close()
 
-	go userMenu()
+	go pubsub.Heartbeat(nc, &htb)
+	go userMenu(nc)
 
-	for time.Now().UnixMilli() - value < 1000{};
+	for time.Now().UnixMilli() - htb < 1000{};
 	
 }
