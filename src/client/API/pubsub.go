@@ -237,7 +237,7 @@ func SendCards(nc *nats.Conn, id int, card int){
 	nc.Publish("game.client", data)
 }
 
-func ManageGame(nc *nats.Conn, id int, card chan(int)) string{
+func ManageGame(nc *nats.Conn, id int, card chan(int), ready chan(struct{}), roundResult chan(string)){
 	gameResult := make(chan(string))
 	ctx, cancel := context.WithCancel(context.Background())
 	
@@ -270,10 +270,9 @@ func ManageGame(nc *nats.Conn, id int, card chan(int)) string{
 			cancel()
 		}
 	})
-	temp := <- gameResult
+	ready <- struct{}{}
+	roundResult <- <- gameResult
 	sub.Unsubscribe()
-	return temp
-
 }
 
 func imAlive(nc *nats.Conn, id int64, ctx context.Context){
@@ -289,7 +288,7 @@ func imAlive(nc *nats.Conn, id int64, ctx context.Context){
 			}
 			data,_ := json.Marshal(msg)
 			nc.Publish("game.heartbeat", data)	
-		}
+		}	
 	}
 
 }
