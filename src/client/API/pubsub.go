@@ -21,7 +21,7 @@ func BrokerConnect(serverNumber int) *nats.Conn {
 }
 
 func RequestPing(nc *nats.Conn) int64 {
-	msg := map[string]int64{
+	msg := map[string]any{
 			"send_time": time.Now().UnixMilli(),
 		}
 	data,_ := json.Marshal(msg)
@@ -30,7 +30,7 @@ func RequestPing(nc *nats.Conn) int64 {
 		return -1
 	}
 	json.Unmarshal(response.Data, &msg)
-	return msg["server_ping"] - msg["send_time"]
+	return int64(msg["server_ping"].(float64)) - int64(msg["send_time"].(float64))
 }
 
 func RequestCreateAccount(nc *nats.Conn) int {
