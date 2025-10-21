@@ -27,7 +27,7 @@ func SetupPS(){
 // BrokerConnect conecta ao broker NATS com tratamento de erro robusto
 // O parâmetro serverNumber se torna redundante, mas mantemos por compatibilidade
 func BrokerConnect(serverNumber int) (*nats.Conn, error) {    
-	url := "nats://127.0.0.1:" + strconv.Itoa(serverNumber+4222)
+	url := "nats://host.docker.internal:" + strconv.Itoa(serverNumber+4222)
 
     // Configuração com timeout e reconexão para robustez
     opts := []nats.Option{
@@ -48,7 +48,7 @@ func BrokerConnect(serverNumber int) (*nats.Conn, error) {
         return nil, fmt.Errorf("failed to connect to NATS: %v", err)
     }
     
-    log.Printf("Successfully connected to NATS at %s", url)
+    fmt.Printf("Successfully connected to NATS at %s", url)
     return nc, nil
 }
 

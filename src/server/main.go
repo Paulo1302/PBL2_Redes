@@ -297,11 +297,13 @@ func setupRaft(id string, port int, fsm *Store, bootstrap bool) (*raft.Raft, str
     config.LocalID = raft.ServerID(id)
     config.Logger = hclog.New(&hclog.LoggerOptions{Name: id, Level: hclog.Info})
 
-    raftAddr := fmt.Sprintf("127.0.0.1:%d", port)
-    tcpAddr, err := net.ResolveTCPAddr("tcp", raftAddr)
-    if err != nil { return nil, "", err }
-    
-    transport, err := raft.NewTCPTransport(raftAddr, tcpAddr, 10, 5*time.Second, os.Stderr)
+    bindAddr := fmt.Sprintf("0.0.0.0:%d", port)
+
+	advertiseAddr := fmt.Sprintf("172.17.0.1:%d", port)
+	
+	advAddr, _ := net.ResolveTCPAddr("tcp", advertiseAddr)
+
+    transport, err := raft.NewTCPTransport(bindAddr, advAddr, 10, 5*time.Second, os.Stderr)
     if err != nil { return nil, "", err }
 
     dataDir := filepath.Join("data", id)
@@ -325,7 +327,7 @@ func setupRaft(id string, port int, fsm *Store, bootstrap bool) (*raft.Raft, str
         }
         r.BootstrapCluster(configuration)
     }
-    return r, raftAddr, nil
+    return r, advertiseAddr, nil
 }
 
 
@@ -399,11 +401,9 @@ func observeLeaderChanges(r *raft.Raft) {
 
 func joinCluster(id string, raftPort int, leaderHTTPPort int, peersStr string) { 
     peers := strings.Split(peersStr, ",")
-    localRaftAddr := fmt.Sprintf("127.0.0.1:%d", raftPort) // Variável agora usada no payload
-    
-    // Configuração do Cliente HTTP para seguir redirecionamentos
-    // Isso é crucial para que o nó se junte automaticamente ao líder correto,
-    // mesmo se o peer que ele contatar for um follower.
+    localRaftAddr := fmt.Sprintf("0.0.0.0:%d", raftPort)
+
+
     client := &http.Client{
         CheckRedirect: func(req *http.Request, via []*http.Request) error {
             if len(via) >= 5 {
