@@ -1,10 +1,3 @@
-cd ~/Documentos/PBL2_Redes/src
-
-# Fazer backup do makefile atual
-cp makefile makefile.backup
-
-# Criar novo makefile (copie o conteúdo do arquivo makefile-novo.txt[178])
-cat > makefile << 'EOF'
 .PHONY: broker build run test clean help dev-client build-client rmAll
 
 # Comandos originais preservados
@@ -77,4 +70,3 @@ quick-test: build
 deps:
 	@echo "Checking dependencies..."
 	@go mod tidy
-EOF

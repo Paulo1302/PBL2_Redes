@@ -4,28 +4,33 @@ import (
     "encoding/json"
     "fmt"
     "log"
-    "os" // Adicionado para ler variáveis de ambiente
     "strconv"
     "time"
 
     "github.com/nats-io/nats.go"
 )
 
+
+func SetupPS(){
+	nc,_ := BrokerConnect(0)
+	ReplyPing(nc)
+	
+	go func() {
+		for {
+			htb := map[string]int64{"server_ping":time.Now().UnixMilli()}
+			PublishMessage(nc, "topic.heartbeat", htb)
+		}
+	}()
+	
+}
+
 // BrokerConnect conecta ao broker NATS com tratamento de erro robusto
 // O parâmetro serverNumber se torna redundante, mas mantemos por compatibilidade
-func BrokerConnect(serverNumber int) (*nats.Conn, error) {
-    // 1. Tentar ler do ambiente (usar o endereço Docker)
-    url := os.Getenv("NATS_URL")
-    if url == "" {
-        // 2. Fallback para localhost (para testes locais ou caso a variável não exista)
-        url = "nats://127.0.0.1:" + strconv.Itoa(serverNumber+4222)
-    }
+func BrokerConnect(serverNumber int) (*nats.Conn, error) {    
+	url := "nats://127.0.0.1:" + strconv.Itoa(serverNumber+4222)
 
-    fmt.Println("Connecting to NATS:", url)
-    
     // Configuração com timeout e reconexão para robustez
     opts := []nats.Option{
-        // ... (opts permanecem os mesmos)
         nats.Name("CardGame-Server"),
         nats.Timeout(10 * time.Second),
         nats.ReconnectWait(2 * time.Second),
@@ -47,20 +52,18 @@ func BrokerConnect(serverNumber int) (*nats.Conn, error) {
     return nc, nil
 }
 
-// ReplyPing implementa resposta a ping com tratamento de erro
+
 func ReplyPing(nc *nats.Conn) error {
     _, err := nc.Subscribe("topic.ping", func(m *nats.Msg) {
-        var payload map[string]int64
+        var payload map[string]any
         
-        // Tratamento de erro no unmarshal
         if err := json.Unmarshal(m.Data, &payload); err != nil {
             log.Printf("Error unmarshaling ping payload: %v", err)
             return
         }
         
-        payload["response_time"] = time.Now().UnixMilli()
+        payload["server_ping"] = time.Now().UnixMilli()
         
-        // Tratamento de erro no marshal
         data, err := json.Marshal(payload)
         if err != nil {
             log.Printf("Error marshaling ping response: %v", err)
@@ -73,7 +76,7 @@ func ReplyPing(nc *nats.Conn) error {
             return
         }
         
-        latency := time.Now().UnixMilli() - payload["send_time"]
+        latency := payload["server_ping"].(int64) - int64(payload["send_time"].(float64))
         fmt.Printf("Ping processed - latency: %d ms\n", latency)
     })
     
@@ -85,8 +88,8 @@ func ReplyPing(nc *nats.Conn) error {
     return nil
 }
 
-// PublishMessage publica mensagem com tratamento de erro
-func PublishMessage(nc *nats.Conn, subject string, data interface{}) error {
+
+func PublishMessage(nc *nats.Conn, subject string, data any) error {
     jsonData, err := json.Marshal(data)
     if err != nil {
         return fmt.Errorf("failed to marshal message: %v", err)
@@ -99,8 +102,8 @@ func PublishMessage(nc *nats.Conn, subject string, data interface{}) error {
     return nil
 }
 
-// RequestMessage envia request com tratamento de erro
-func RequestMessage(nc *nats.Conn, subject string, data interface{}, timeout time.Duration) (*nats.Msg, error) {
+
+func RequestMessage(nc *nats.Conn, subject string, data any, timeout time.Duration) (*nats.Msg, error) {
     jsonData, err := json.Marshal(data)
     if err != nil {
         return nil, fmt.Errorf("failed to marshal request: %v", err)

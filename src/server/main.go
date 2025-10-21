@@ -18,16 +18,13 @@ import (
 	"sync"
 	"time"
 
+	"server/API"
+
 	"github.com/gin-gonic/gin"
 	"github.com/hashicorp/go-hclog"
 	"github.com/hashicorp/raft"
 	raftboltdb "github.com/hashicorp/raft-boltdb"
 )
-
-// Inicialização randômica para Election Timeout
-func init() {
-    rand.Seed(time.Now().UnixNano())
-}
 
 // --- 1. RAFT FSM & STORE (Atualizado) ---
 
@@ -480,6 +477,8 @@ func main() {
     var raftLog *raft.Raft 
     var raftAddr string
     var err error
+
+	API.SetupPS()
 
 	// 3. Configura o Raft
 	raftLog, raftAddr, err = setupRaft(nodeID, raftPort, store, bootstrap) 
