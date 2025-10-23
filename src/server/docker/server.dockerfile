@@ -46,4 +46,4 @@ EXPOSE 8080 7000
 
 # Execute the compiled binary directly. 
 # We replace the inefficient 'go run' with the executable binary itself.
-CMD ["./server_app", "--id", "1", "--bootstrap", "true"]
+CMD ["./server_app", "--id", "1", "--bootstrap", "true", "--port", "8080", "--raft-port", "7000", "--raft-addr", "raft-leader:7000"]
