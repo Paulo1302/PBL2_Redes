@@ -45,51 +45,90 @@ Certifique-se de que os seguintes arquivos existem no seu projeto:
 
     server/docker/entrypoint.sh (O script que descobre o IP do host e injeta a flag --raft-addr)
 
-1. Compilação da Imagem
+Passo 1: Construir a Imagem (Uma Vez)
 
-Todos os nós (Líderes e Followers) usam a mesma imagem Docker. Você só precisa construir a imagem uma vez.
+Primeiro, construa a sua imagem Docker. Esta única imagem será usada para o líder e para todos os followers.
 
-Execute no diretório server/ (onde está o seu main.go):
+Execute este comando a partir do seu diretório server/:
+Bash
 
-bash
-docker build --no-cache -f docker/server.dockerfile -t meu-servidor-raft .
+# (Use --no-cache se você alterou o main.go ou entrypoint.sh)
+docker build -f docker/server.dockerfile -t meu-servidor-raft .
 
-2. Limpar e Re-executar o Líder
+Passo 2: Iniciar o Servidor Líder
 
-Antes de iniciar um novo container do líder, pare e remova o container antigo para evitar conflitos:
+O líder usará o CMD padrão do seu server.dockerfile.
 
-bash
-docker stop raft-leader && docker rm raft-leader
+Bash
 
-Inicie o container do líder com:
+# (Opcional) Limpe qualquer líder antigo:
+docker rm raft-leader
 
-bash
-docker run -d --name raft-leader \
-  -p 7000:7000 -p 8080:8080 \
-  -v raft-leader-data:/app/data \
-  meu-servidor-raft \
-  /app/entrypoint.sh --id leader --port 8080 --raft-port 7000 --bootstrap true
+# 1. Inicie o Líder
+docker run -d --name raft-leader --network=host meu-servidor-raft
 
-3. Iniciar Followers
+    --network=host: É crucial. Permite que o entrypoint.sh descubra o IP real da sua máquina (ex: 192.168.0.106).
 
-Para iniciar followers, substitua --id e as portas para evitar conflitos:
+    O entrypoint.sh detetará a porta padrão (7000) e o IP do host, executando o server_app com as flags --raft-addr "IP_DO_LIDER:7000" --id "1" --bootstrap "true" ....
 
-bash
-docker run -d --name raft-follower1 \
-  -p 7001:7000 -p 8081:8080 \
-  -v raft-follower1-data:/app/data \
-  meu-servidor-raft \
-  /app/entrypoint.sh --id follower1 --port 8080 --raft-port 7000 --peers raft-leader:7000
+Passo 3: Descobrir o IP do Líder
 
-4. Verificar o status do cluster
+Você precisará do IP real do líder para que os followers possam encontrá-lo. Na máquina do líder, execute:
+Bash
 
-Para verificar o status do líder e membros conectados:
+ip a | grep 'inet '
 
-bash
-curl http://localhost:8080/status
+(Procure o seu IP de rede principal, por exemplo: 192.168.0.106. Vamos chamar isto de IP_DO_LIDER.)
 
-A saída mostrará os nós atuantes no cluster com seus respectivos endereços.
+Passo 4: Iniciar os Followers
 
-Este guia garante que cada nó usa seu diretório de persistência próprio, configura o entrypoint.sh para detectar IPs automaticamente e permite escalabilidade em múltiplas máquinas sem alteração de código.
+Agora, inicie os seus dois followers. Você deve substituir IP_DO_LIDER pelo IP que encontrou no Passo 3.
 
-Quer que ajude a adicionar exemplos completos de configuração para followers diferentes, scripts auxiliares de monitoramento, ou documentação para troubleshooting?
+Importante: Se estiver a iniciar os followers na mesma máquina que o líder (para testes), você deve usar portas diferentes para cada um. Se eles estiverem em máquinas diferentes, pode usar as mesmas portas (8080/7000).
+
+Cenário A: Followers na MESMA Máquina (Modo de Teste)
+
+Bash
+
+# (Opcional) Limpe followers antigos:
+docker rm raft-follower1 raft-follower2
+
+# 1. Inicie o Follower 1 (em portas 8081/7001)
+docker run -d --name raft-follower1 --network=host meu-servidor-raft \
+  --id "follower1" \
+  --port 8081 \
+  --raft-port 7001 \
+  --peers "IP_DO_LIDER"
+
+# 2. Inicie o Follower 2 (em portas 8082/7002)
+docker run -d --name raft-follower2 --network=host meu-servidor-raft \
+  --id "follower2" \
+  --port 8082 \
+  --raft-port 7002 \
+  --peers "IP_DO_LIDER"
+
+    O entrypoint.sh detetará as flags --raft-port 7001 e --raft-port 7002, anunciando os endereços corretos ao líder.
+
+Cenário B: Followers em Máquinas DIFERENTES (Modo de Produção)
+
+(Execute isto nas suas outras máquinas. Certifique-se de que a imagem meu-servidor-raft existe nelas.)
+Bash
+
+# (Opcional) Limpe followers antigos:
+docker rm raft-follower1 raft-follower2
+
+# 1. Inicie o Follower 1 (na Máquina 2)
+docker run -d --name raft-follower1 --network=host meu-servidor-raft \
+  --id "follower1" \
+  --port 8080 \
+  --raft-port 7000 \
+  --peers "IP_DO_LIDER"
+
+# 2. Inicie o Follower 2 (na Máquina 3)
+docker run -d --name raft-follower2 --network=host meu-servidor-raft \
+  --id "follower2" \
+  --port 8080 \
+  --raft-port 7000 \
+  --peers "IP_DO_LIDER"
+
+    O entrypoint.sh em cada máquina descobrirá o IP dessa máquina e anunciá-lo-á corretamente ao líder.
