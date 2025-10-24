@@ -1,49 +1,34 @@
 # ----------------------------------------------------
 # STAGE 1: BUILDER
-# This stage compiles the Go application into a static binary.
 # ----------------------------------------------------
 FROM golang:1.24.5 AS builder
-
-# Set the working directory inside the container
 WORKDIR /app
-
-# Assuming the build context is the 'server/' directory, 
-# 'go.mod' and 'go.sum' are directly accessible here.
 COPY go.mod ./
 COPY go.sum ./
-
-# Download dependencies first to leverage Docker's layer caching.
-# This step only runs if go.mod or go.sum changes.
 RUN go mod download
-
-# Copy the rest of the application source code
 COPY . .
-
-# Compile the static binary. CGO_ENABLED=0 creates a binary with no external C dependencies,
-# allowing it to run on minimal base images like Alpine or Scratch.
-# We output the binary as 'server_app'
 RUN CGO_ENABLED=0 GOOS=linux go build -o server_app .
 
 # ----------------------------------------------------
-# STAGE 2: FINAL (Minimal Runtime)
-# This stage copies only the compiled binary for a tiny, secure image.
+# STAGE 2: FINAL
 # ----------------------------------------------------
 FROM alpine:latest
 
-# Install ca-certificates needed for secure connections (HTTPS)
-RUN apk --no-cache add ca-certificates
+# --- ALTERAÇÃO 1: Instala iproute2 (para descoberta de IP) ---
+RUN apk --no-cache add ca-certificates iproute2
 
-# Set the working directory
 WORKDIR /app
-
-# Copy the compiled binary from the 'builder' stage
-# The binary is named 'server_app'
 COPY --from=builder /app/server_app .
 
-# Expose both the primary application port (8080) and the newly requested port (7000)
-# NOTE: The NATS port (4222) is an OUTBOUND connection and does not need to be exposed here.
+# --- ALTERAÇÃO 2: Copia o entrypoint e o torna executável ---
+COPY docker/entrypoint.sh .
+RUN chmod +x entrypoint.sh
+
 EXPOSE 8080 7000
 
-# Execute the compiled binary directly. 
-# We replace the inefficient 'go run' with the executable binary itself.
-CMD ["./server_app", "--id", "1", "--bootstrap", "true", "--port", "8080", "--raft-port", "7000", "--raft-addr", "raft-leader:7000"]
+# --- ALTERAÇÃO 3: Define o entrypoint ---
+ENTRYPOINT ["./entrypoint.sh"]
+
+# --- ALTERAÇÃO 4: Define o CMD padrão (para o Líder) ---
+# Note que --raft-addr foi REMOVIDO daqui, pois o entrypoint vai adicioná-lo
+CMD ["--id", "1", "--bootstrap", "true", "--port", "8080", "--raft-port", "7000"]
