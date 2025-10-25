@@ -9,7 +9,7 @@ import (
 	"github.com/hashicorp/raft"
 )
 
-// Define a estrutura para comandos Raft (Logs)
+// command define a estrutura para comandos Raft (Logs)
 type command struct {
 	Op         string `json:"op"`
 	Key        string `json:"key"`
@@ -19,16 +19,17 @@ type command struct {
 }
 
 // Store é a nossa FSM (Finite State Machine)
+// Contém os dados replicados e a lista de membros do cluster.
 type Store struct {
 	mu       sync.Mutex
-	data     map[string]string
-	members  map[string]raft.ServerAddress
-	RaftLog  *raft.Raft
-	NodeID   string
-	RaftAddr string
+	data     map[string]string             // Dados chave-valor replicados
+	members  map[string]raft.ServerAddress // Lista sincronizada de membros do cluster
+	RaftLog  *raft.Raft                    // Referência à instância Raft (preenchida pelo main)
+	NodeID   string                        // ID deste nó (preenchido pelo main)
+	RaftAddr string                        // Endereço Raft deste nó (preenchido pelo main)
 }
 
-// NewStore cria uma nova instância do nosso Store
+// NewStore cria uma nova instância inicializada do Store (FSM).
 func NewStore() *Store {
 	return &Store{
 		data:    make(map[string]string),
@@ -40,79 +41,99 @@ func NewStore() *Store {
 // Implementação da interface raft.FSM
 // ----------------------------------------------------
 
-// Apply processa um comando replicado via Raft
+// Apply processa um comando (log) que foi cometido pelo cluster Raft.
+// Esta função é chamada em *todos* os nós para garantir a consistência.
 func (s *Store) Apply(log *raft.Log) interface{} {
 	var c command
 	if err := json.Unmarshal(log.Data, &c); err != nil {
+		// Retorna um erro que será registrado pelo Raft
 		return fmt.Errorf("failed to unmarshal command: %w", err)
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// Aplica a operação com base no tipo de comando
 	switch c.Op {
 	case "set":
 		s.data[c.Key] = c.Value
-		return nil
+		fmt.Printf("[FSM Apply] Set key '%s' to '%s'\n", c.Key, c.Value) // Log de depuração
+		return nil // Sucesso
 	case "delete":
 		delete(s.data, c.Key)
-		return nil
+		fmt.Printf("[FSM Apply] Deleted key '%s'\n", c.Key) // Log de depuração
+		return nil // Sucesso
 	case "add_member":
 		s.members[c.MemberID] = raft.ServerAddress(c.MemberAddr)
-		return nil
+		fmt.Printf("[FSM Apply] Added member '%s' at '%s'\n", c.MemberID, c.MemberAddr) // Log de depuração
+		return nil // Sucesso
 	case "remove_member":
 		delete(s.members, c.MemberID)
-		return nil
+		fmt.Printf("[FSM Apply] Removed member '%s'\n", c.MemberID) // Log de depuração
+		return nil // Sucesso
 	default:
+		// Retorna um erro se o comando for desconhecido
 		return fmt.Errorf("unrecognized command op: %s", c.Op)
 	}
 }
 
-// Snapshot cria um instantâneo do estado atual
+// Snapshot cria um instantâneo consistente do estado atual da FSM.
+// Chamado periodicamente pelo Raft para truncar o log.
 func (s *Store) Snapshot() (raft.FSMSnapshot, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Cria cópias dos dados para evitar race conditions
-	dataCopy := make(map[string]string)
+	// Cria cópias profundas dos mapas para garantir a consistência do snapshot
+	dataCopy := make(map[string]string, len(s.data))
 	for k, v := range s.data {
 		dataCopy[k] = v
 	}
-
-	membersCopy := make(map[string]raft.ServerAddress)
+	membersCopy := make(map[string]raft.ServerAddress, len(s.members))
 	for k, v := range s.members {
 		membersCopy[k] = v
 	}
 
+	fmt.Println("[FSM Snapshot] Creating snapshot") // Log de depuração
 	return &fsmSnapshot{
 		data:    dataCopy,
 		members: membersCopy,
-	}, nil
+	}, nil // Sucesso
 }
 
-// Restore restaura o estado a partir de um snapshot
+// Restore restaura o estado da FSM a partir de um snapshot recebido.
+// Chamado quando um nó está a inicializar ou muito atrasado.
 func (s *Store) Restore(rc io.ReadCloser) error {
 	defer rc.Close()
+	decoder := json.NewDecoder(rc)
 
-	var snapData snapshotData
-	if err := json.NewDecoder(rc).Decode(&snapData); err != nil {
-		return err
+	// Define a estrutura esperada do snapshot (deve corresponder a fsmSnapshot.Persist)
+	var snapshotData struct {
+		Data    map[string]string             `json:"data"`
+		Members map[string]raft.ServerAddress `json:"members"`
 	}
 
+	// Decodifica o snapshot
+	if err := decoder.Decode(&snapshotData); err != nil {
+		return fmt.Errorf("failed to decode snapshot: %w", err)
+	}
+
+	// Aplica o estado do snapshot à FSM
 	s.mu.Lock()
-	s.data = snapData.Data
-	s.members = snapData.Members
+	s.data = snapshotData.Data
+	s.members = snapshotData.Members
 	s.mu.Unlock()
 
-	return nil
+	fmt.Println("[FSM Restore] Restored state from snapshot") // Log de depuração
+	return nil // Sucesso
 }
 
-// GetMembers retorna cópia segura da lista de membros
+// GetMembers retorna uma cópia segura (deep copy) da lista atual de membros.
+// Útil para endpoints de API que precisam mostrar os membros.
 func (s *Store) GetMembers() map[string]raft.ServerAddress {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	membersCopy := make(map[string]raft.ServerAddress)
+	membersCopy := make(map[string]raft.ServerAddress, len(s.members))
 	for k, v := range s.members {
 		membersCopy[k] = v
 	}
@@ -120,43 +141,57 @@ func (s *Store) GetMembers() map[string]raft.ServerAddress {
 }
 
 // ----------------------------------------------------
-// Estruturas auxiliares para Snapshot
+// Implementação da interface raft.FSMSnapshot
 // ----------------------------------------------------
 
-// snapshotData é a estrutura serializada do snapshot
-type snapshotData struct {
-	Data    map[string]string                  `json:"data"`
-	Members map[string]raft.ServerAddress `json:"members"`
-}
-
-// fsmSnapshot implementa raft.FSMSnapshot
+// fsmSnapshot representa um snapshot persistente do estado do Store.
 type fsmSnapshot struct {
 	data    map[string]string
 	members map[string]raft.ServerAddress
 }
 
-// ----------------------------------------------------
-// Implementação da interface raft.FSMSnapshot
-// ----------------------------------------------------
-
-// Persist salva o snapshot no sink fornecido
+// Persist salva o conteúdo do snapshot (os mapas) no sink fornecido pelo Raft.
+// O Raft geralmente fornece um arquivo temporário como sink.
 func (f *fsmSnapshot) Persist(sink raft.SnapshotSink) error {
-	snapData := snapshotData{
-		Data:    f.data,
-		Members: f.members,
-	}
+	// Função para garantir que o sink seja fechado ou cancelado em caso de erro
+	err := func() error {
+		// Estrutura para serializar (deve corresponder a Restore)
+		payload := struct {
+			Data    map[string]string             `json:"data"`
+			Members map[string]raft.ServerAddress `json:"members"`
+		}{
+			Data:    f.data,
+			Members: f.members,
+		}
 
-	err := json.NewEncoder(sink).Encode(snapData)
+		// Codifica os dados como JSON e escreve no sink
+		encoder := json.NewEncoder(sink)
+		if err := encoder.Encode(&payload); err != nil {
+			return fmt.Errorf("failed to encode snapshot payload: %w", err)
+		}
+
+		// Fecha o sink para indicar que a escrita está completa
+		if err := sink.Close(); err != nil {
+			return fmt.Errorf("failed to close snapshot sink: %w", err)
+		}
+		return nil // Sucesso
+	}()
+
+	// Se ocorreu algum erro durante a persistência, cancela o snapshot
 	if err != nil {
-		sink.Cancel() // CORREÇÃO: Cancel() não retorna error
-		return fmt.Errorf("failed to encode snapshot: %w", err)
+		_ = sink.Cancel() // Ignora erro no Cancel, pois já temos o erro original
+		fmt.Printf("[FSM Snapshot Persist] Error: %v\n", err) // Log de depuração
+		return err
 	}
 
-	return sink.Close()
+	fmt.Println("[FSM Snapshot Persist] Snapshot persisted successfully") // Log de depuração
+	return nil // Sucesso
 }
 
-// Release libera recursos do snapshot
+// Release é chamado pelo Raft quando o snapshot não é mais necessário.
+// Libera a memória usada pelo snapshot.
 func (f *fsmSnapshot) Release() {
-	f.data = nil
-	f.members = nil
+	f.data = nil    // Permite que o GC colete o mapa antigo
+	f.members = nil // Permite que o GC colete o mapa antigo
+	fmt.Println("[FSM Snapshot Release] Snapshot resources released") // Log de depuração
 }
