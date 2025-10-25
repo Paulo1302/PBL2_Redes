@@ -94,18 +94,10 @@ Bash
 docker rm raft-follower1 raft-follower2
 
 # 1. Inicie o Follower 1 (em portas 8081/7001)
-docker run -d --name raft-follower1 --network=host meu-servidor-raft \
-  --id "follower1" \
-  --port 8081 \
-  --raft-port 7001 \
-  --peers "IP_DO_LIDER"
+docker run -d --name raft-follower1 --network=host meu-servidor-raft --id "follower1" --port 8081 --raft-port 7001 --peers "IP_DO_LIDER"
 
 # 2. Inicie o Follower 2 (em portas 8082/7002)
-docker run -d --name raft-follower2 --network=host meu-servidor-raft \
-  --id "follower2" \
-  --port 8082 \
-  --raft-port 7002 \
-  --peers "IP_DO_LIDER"
+docker run -d --name raft-follower2 --network=host meu-servidor-raft --id "follower2" --port 8082 --raft-port 7002 --peers "IP_DO_LIDER"
 
     O entrypoint.sh detetará as flags --raft-port 7001 e --raft-port 7002, anunciando os endereços corretos ao líder.
 
@@ -118,17 +110,9 @@ Bash
 docker rm raft-follower1 raft-follower2
 
 # 1. Inicie o Follower 1 (na Máquina 2)
-docker run -d --name raft-follower1 --network=host meu-servidor-raft \
-  --id "follower1" \
-  --port 8080 \
-  --raft-port 7000 \
-  --peers "IP_DO_LIDER"
+docker run -d --name raft-follower1 --network=host meu-servidor-raft --id "follower1" --port 8080 --raft-port 7000 --peers "IP_DO_LIDER"
 
 # 2. Inicie o Follower 2 (na Máquina 3)
-docker run -d --name raft-follower2 --network=host meu-servidor-raft \
-  --id "follower2" \
-  --port 8080 \
-  --raft-port 7000 \
-  --peers "IP_DO_LIDER"
+docker run -d --name raft-follower2 --network=host meu-servidor-raft --id "follower2" --port 8080 --raft-port 7000 --peers "IP_DO_LIDER"
 
     O entrypoint.sh em cada máquina descobrirá o IP dessa máquina e anunciá-lo-á corretamente ao líder.
