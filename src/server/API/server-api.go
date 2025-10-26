@@ -1,25 +1,87 @@
 package API
 
 import (
+	"bytes"
 	"encoding/json"
-	"fmt" // Adicionado para logs
-	"log" // Adicionado para logs
+	"fmt"
+	"io"
+	"log"
+	"math/rand" // Importado para backoff randomizado
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/hashicorp/raft"
 )
 
-// ApplyLog envia um comando (log) para o líder Raft.
-// Esta é uma função auxiliar interna ao pacote API.
+// --- Estruturas Padrão (Definidas aqui para exemplo, idealmente em types.go) ---
+
+// StandardRequest define a estrutura para requisições (NATS e REST Interno)
+type StandardRequest struct {
+	RequestID     string          `json:"requestId"`
+	RequesterID   string          `json:"requesterId"` // ID do follower
+	OriginalMsgID string          `json:"originalMsgId,omitempty"`
+	Timestamp     int64           `json:"timestamp"`
+	OperationType string          `json:"operationType"`
+	Payload       json.RawMessage `json:"payload"`
+}
+
+// StandardResponse define a estrutura para respostas (NATS e REST Interno)
+type StandardResponse struct {
+	RequestID    string          `json:"requestId"`
+	ResponderID  string          `json:"responderId"` // ID do Líder
+	Timestamp    int64           `json:"timestamp"`
+	IsSuccess    bool            `json:"isSuccess"`
+	Payload      json.RawMessage `json:"payload,omitempty"`
+	ErrorCode    string          `json:"errorCode,omitempty"`
+	ErrorMessage string          `json:"errorMessage,omitempty"`
+}
+
+// NewErrorResponse cria uma resposta de erro padrão
+func NewErrorResponse(reqID, responderID, errCode, errMsg string) StandardResponse {
+	return StandardResponse{
+		RequestID:    reqID,
+		ResponderID:  responderID,
+		Timestamp:    time.Now().UnixMilli(),
+		IsSuccess:    false,
+		ErrorCode:    errCode,
+		ErrorMessage: errMsg,
+	}
+}
+
+// NewSuccessResponse cria uma resposta de sucesso padrão
+func NewSuccessResponse(reqID, responderID string, payload interface{}) StandardResponse {
+	// Tenta serializar o payload. Se falhar, define como nulo ou uma mensagem de erro.
+	payloadBytes, err := json.Marshal(payload)
+	if err != nil {
+		log.Printf("[NewSuccessResponse WARN] Failed to marshal payload for ReqID '%s': %v\n", reqID, err)
+		// Retorna sucesso, mas com payload indicando erro de marshal
+		return StandardResponse{
+			RequestID:    reqID,
+			ResponderID:  responderID,
+			Timestamp:    time.Now().UnixMilli(),
+			IsSuccess:    true, // A operação principal pode ter sido sucesso, mas a resposta falhou
+			Payload:      []byte(fmt.Sprintf(`{"error": "failed to marshal success payload: %v"}`, err)),
+		}
+	}
+	return StandardResponse{
+		RequestID:    reqID,
+		ResponderID:  responderID,
+		Timestamp:    time.Now().UnixMilli(),
+		IsSuccess:    true,
+		Payload:      payloadBytes,
+	}
+}
+
+// --- Fim Estruturas Padrão ---
+
+// applyLogInternal (Inalterada - continua necessária para o Líder processar)
+// Assume que 'command' está definido em store.go
 func (s *Store) applyLogInternal(op string, key string, value string, memberID string, memberAddr string) (interface{}, error) {
 	if s.RaftLog.State() != raft.Leader {
-		// Retorna um erro específico que pode ser interpretado pelo handler
 		return nil, fmt.Errorf("node is not the leader")
 	}
-
-	// Usa o 'command' struct definido em store.go (interno ao pacote API)
 	cmd := command{
 		Op:         op,
 		Key:        key,
@@ -29,94 +91,122 @@ func (s *Store) applyLogInternal(op string, key string, value string, memberID s
 	}
 	b, err := json.Marshal(cmd)
 	if err != nil {
-		log.Printf("Error marshalling command (%s): %v\n", op, err)
+		log.Printf("[applyLogInternal ERROR] Marshalling command (%s): %v\n", op, err)
 		return nil, fmt.Errorf("failed to marshal command: %w", err)
 	}
 
-	// Envia o log para o cluster Raft com um timeout
 	applyFuture := s.RaftLog.Apply(b, 500*time.Millisecond)
 	if err := applyFuture.Error(); err != nil {
-		log.Printf("Error applying command (%s) to Raft: %v\n", op, err)
+		log.Printf("[applyLogInternal ERROR] Applying command (%s) to Raft: %v\n", op, err)
 		return nil, fmt.Errorf("failed to apply command to Raft: %w", err)
 	}
 
-	// Retorna a resposta da FSM (se houver) ou nil
 	return applyFuture.Response(), nil
 }
 
-// ---------------- Handlers (Métodos em *Store) -------------------
+// --- Função de Forwarding Atualizada ---
 
-// getHandler retorna um valor da FSM local (leitura)
-func (s *Store) getHandler(c *gin.Context) {
-	key := c.Param("key")
+// forwardToLeaderViaREST encaminha uma StandardRequest para a API *interna* do líder.
+// Retorna uma StandardResponse (mesmo em caso de erro de comunicação).
+func (s *Store) forwardToLeaderViaREST(req StandardRequest) StandardResponse {
+	retries := 3
+	backoff := 100 * time.Millisecond
 
-	// Leituras podem ser feitas em qualquer nó, mas para consistência forte,
-	// pode-se preferir redirecionar para o líder ou usar ReadOnly (não implementado aqui).
-	s.mu.Lock()
-	value, ok := s.data[key]
-	s.mu.Unlock()
+	// Define o ID do requisitante (este nó follower)
+	req.RequesterID = s.NodeID
 
-	if ok {
-		c.JSON(http.StatusOK, gin.H{"key": key, "value": value})
-	} else {
-		c.JSON(http.StatusNotFound, gin.H{"error": "key not found"})
-	}
-}
-
-// setHandler aplica um novo valor através do Raft (escrita)
-func (s *Store) setHandler(c *gin.Context) {
-	var req struct {
-		Value string `json:"value" binding:"required"`
-	}
-	if err := c.BindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request payload: 'value' is required"})
-		return
-	}
-
-	key := c.Param("key")
-
-	// Tenta aplicar o log via Raft
-	_, err := s.applyLogInternal("set", key, req.Value, "", "")
-	if err != nil {
-		// Verifica se o erro foi por não ser o líder
-		if err.Error() == "node is not the leader" {
-			leaderAddr := string(s.RaftLog.Leader())
-			log.Printf("[API Set] Not leader, redirecting client to leader: %s\n", leaderAddr)
-			c.JSON(http.StatusTemporaryRedirect, gin.H{
-				"error":  "Not the leader. Redirect to the leader for write operations.",
-				"leader": leaderAddr,
-			})
-		} else {
-			// Outro erro durante o Apply
-			log.Printf("[API Set] Error applying log for key '%s': %v\n", key, err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to apply log: %v", err)})
+	for i := 0; i < retries; i++ {
+		leaderRaftAddr := string(s.RaftLog.Leader())
+		if leaderRaftAddr == "" {
+			log.Printf("[Forwarding] Attempt %d/%d for ReqID '%s': No leader known. Waiting...\n", i+1, retries, req.RequestID)
+			time.Sleep(backoff + time.Duration(rand.Intn(100))*time.Millisecond)
+			backoff *= 2
+			continue
 		}
-		return
-	}
 
-	// Se chegou aqui, o Apply foi bem-sucedido
-	log.Printf("[API Set] Successfully applied 'set' for key '%s'\n", key)
-	c.JSON(http.StatusOK, gin.H{"status": "applied", "key": key, "value": req.Value})
+		// Assume porta 8080 para API do líder (TODO: Tornar dinâmico)
+		leaderHost := strings.Split(leaderRaftAddr, ":")[0]
+		leaderAPIPort := 8080
+		// O path interno pode ser derivado do OperationType
+		// Garante que OperationType seja seguro para URL (ex: 'openPack' -> '/internal/openpack')
+		internalPath := fmt.Sprintf("/internal/%s", strings.ToLower(req.OperationType))
+		leaderAPIURL := fmt.Sprintf("http://%s:%d%s", leaderHost, leaderAPIPort, internalPath)
+
+		// Serializa a StandardRequest completa para enviar ao líder
+		bodyBytes, err := json.Marshal(req)
+		if err != nil {
+			log.Printf("[Forwarding] ERROR for ReqID '%s': Failed marshalling request: %v\n", req.RequestID, err)
+			return NewErrorResponse(req.RequestID, s.NodeID, "FORWARD_MARSHAL_ERROR", err.Error())
+		}
+
+		log.Printf("[Forwarding] Attempt %d/%d for ReqID '%s': Forwarding %s to leader API at %s\n", i+1, retries, req.RequestID, req.OperationType, leaderAPIURL)
+
+		// Cria e envia a requisição HTTP POST (assume POST para operações internas que mudam estado)
+		// Para Ping (GET), esta função precisaria ser adaptada ou uma nova criada
+		proxyReq, err := http.NewRequest("POST", leaderAPIURL, bytes.NewBuffer(bodyBytes))
+		if err != nil {
+			log.Printf("[Forwarding] ERROR for ReqID '%s': Failed creating request: %v\n", req.RequestID, err)
+			return NewErrorResponse(req.RequestID, s.NodeID, "FORWARD_REQUEST_CREATE_ERROR", err.Error())
+		}
+		proxyReq.Header.Set("Content-Type", "application/json")
+
+		client := &http.Client{Timeout: 5 * time.Second}
+		resp, err := client.Do(proxyReq)
+
+		// Analisa erro de comunicação
+		if err != nil {
+			log.Printf("[Forwarding] WARN Attempt %d/%d for ReqID '%s': Error sending request to leader %s: %v. Retrying after backoff...\n", i+1, retries, req.RequestID, leaderAPIURL, err)
+			time.Sleep(backoff + time.Duration(rand.Intn(100))*time.Millisecond)
+			backoff *= 2
+			continue // Tenta novamente
+		}
+
+		// Lê a resposta do líder (espera uma StandardResponse)
+		responseBody, readErr := io.ReadAll(resp.Body)
+		resp.Body.Close()
+
+		if readErr != nil {
+			log.Printf("[Forwarding] ERROR for ReqID '%s': Failed reading response body from leader %s: %v\n", req.RequestID, leaderAPIURL, readErr)
+			return NewErrorResponse(req.RequestID, s.NodeID, "FORWARD_READ_RESPONSE_ERROR", readErr.Error())
+		}
+
+		// Deserializa a StandardResponse do líder
+		var leaderResp StandardResponse
+		if err := json.Unmarshal(responseBody, &leaderResp); err != nil {
+			// Se o líder não retornou o formato esperado
+			log.Printf("[Forwarding] ERROR for ReqID '%s': Failed unmarshalling leader response (Status: %d): %v. Body: %s\n", req.RequestID, resp.StatusCode, err, string(responseBody))
+			return NewErrorResponse(req.RequestID, s.NodeID, "FORWARD_UNMARSHAL_ERROR", fmt.Sprintf("Leader returned status %d but invalid response format", resp.StatusCode))
+		}
+
+		log.Printf("[Forwarding] Success for ReqID '%s': Received response from leader %s (Status: %d). IsSuccess: %t\n", req.RequestID, leaderAPIURL, resp.StatusCode, leaderResp.IsSuccess)
+		// Retorna a resposta recebida do líder
+		return leaderResp
+
+	} // Fim do loop for retries
+
+	// Se chegou aqui, todas as tentativas falharam
+	log.Printf("[Forwarding] FATAL ERROR for ReqID '%s': Failed to forward request to leader after %d attempts.\n", req.RequestID, retries)
+	return NewErrorResponse(req.RequestID, s.NodeID, "FORWARD_FAILED_MAX_RETRIES", fmt.Sprintf("failed to forward request after %d attempts", retries))
 }
 
-// statusHandler retorna o status atual do nó Raft
+// --- Handlers REST (Externos e Internos Atualizados) ---
+
+// statusHandler (Inalterado)
 func (s *Store) statusHandler(c *gin.Context) {
 	state := s.RaftLog.State().String()
 	leader := s.RaftLog.Leader()
-
-	// Usa o método GetMembers() para obter cópia segura da lista
-	members := s.GetMembers()
+	members := s.GetMembers() // Assume GetMembers em store.go
 
 	c.JSON(http.StatusOK, gin.H{
 		"node_id": s.NodeID,
 		"state":   state,
 		"leader":  leader,
 		"address": s.RaftAddr,
-		"members": members, // Inclui a lista de membros da FSM
+		"members": members,
 	})
 }
 
-// joinHandler lida com pedidos de nós para se juntarem ao cluster
+// joinHandler (Inalterado - Usa Redirect)
 func (s *Store) joinHandler(c *gin.Context) {
 	var req struct {
 		ID      string `json:"id" binding:"required"`
@@ -127,7 +217,6 @@ func (s *Store) joinHandler(c *gin.Context) {
 		return
 	}
 
-	// Apenas o líder pode adicionar nós
 	if s.RaftLog.State() != raft.Leader {
 		leaderAddr := string(s.RaftLog.Leader())
 		log.Printf("[API Join] Not leader, redirecting join request from '%s' to leader: %s\n", req.ID, leaderAddr)
@@ -140,7 +229,6 @@ func (s *Store) joinHandler(c *gin.Context) {
 
 	log.Printf("[API Join] Received join request from Node '%s' at '%s'\n", req.ID, req.Address)
 
-	// 1. Adiciona o nó à configuração do Raft (AddVoter)
 	addVoterFuture := s.RaftLog.AddVoter(raft.ServerID(req.ID), raft.ServerAddress(req.Address), 0, 0)
 	if err := addVoterFuture.Error(); err != nil {
 		log.Printf("[API Join] Error adding voter '%s' to Raft config: %v\n", req.ID, err)
@@ -149,11 +237,8 @@ func (s *Store) joinHandler(c *gin.Context) {
 	}
 	log.Printf("[API Join] Raft AddVoter successful for Node '%s'\n", req.ID)
 
-	// 2. Aplica a adição à FSM (add_member) via Raft
 	_, err := s.applyLogInternal("add_member", "", "", req.ID, req.Address)
 	if err != nil {
-		// Se falhar aqui, o nó está na config Raft mas não na FSM. Potencial inconsistência.
-		// Poderia tentar remover o Voter aqui como compensação, mas é complexo.
 		log.Printf("[API Join] Error applying 'add_member' to FSM for Node '%s': %v (Raft AddVoter succeeded)\n", req.ID, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to apply member addition to FSM: %v", err)})
 		return
@@ -163,8 +248,7 @@ func (s *Store) joinHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "Node added successfully to Raft and FSM"})
 }
 
-// leaveHandler lida com pedidos para remover nós do cluster
-// (Copiado da sua versão de main.go, assumindo que está correto)
+// leaveHandler (Inalterado - Usa Redirect)
 func (s *Store) leaveHandler(c *gin.Context) {
 	if s.RaftLog.State() != raft.Leader {
 		leaderAddr := string(s.RaftLog.Leader())
@@ -186,7 +270,6 @@ func (s *Store) leaveHandler(c *gin.Context) {
 
 	log.Printf("[API Leave] Received leave request for Node '%s'\n", req.ID)
 
-	// 1. Remove o nó da configuração do Raft (RemoveServer)
 	removeFuture := s.RaftLog.RemoveServer(raft.ServerID(req.ID), 0, 0)
 	if err := removeFuture.Error(); err != nil {
 		log.Printf("[API Leave] Error removing server '%s' from Raft config: %v\n", req.ID, err)
@@ -195,11 +278,10 @@ func (s *Store) leaveHandler(c *gin.Context) {
 	}
 	log.Printf("[API Leave] Raft RemoveServer successful for Node '%s'\n", req.ID)
 
-	// 2. Aplica a remoção à FSM (remove_member) via Raft
 	_, err := s.applyLogInternal("remove_member", "", "", req.ID, "")
 	if err != nil {
 		log.Printf("[API Leave] Error applying 'remove_member' to FSM for Node '%s': %v (Raft RemoveServer succeeded)\n", req.ID, err)
-		// Continua para retornar sucesso parcial, pois o nó já saiu do Raft
+		// Continua
 	} else {
 		log.Printf("[API Leave] FSM 'remove_member' successfully applied for Node '%s'\n", req.ID)
 	}
@@ -207,32 +289,216 @@ func (s *Store) leaveHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "Node removed successfully from Raft (FSM update applied/attempted)"})
 }
 
-// membersHandler retorna a lista de membros da FSM.
-// Leitura pode ser feita em qualquer nó (consistência eventual).
+// membersHandler (Inalterado)
 func (s *Store) membersHandler(c *gin.Context) {
-	// Obtém a cópia segura da lista de membros
-	members := s.GetMembers()
-
+	members := s.GetMembers() // Assume GetMembers em store.go
 	c.JSON(http.StatusOK, gin.H{
 		"queried_node_id": s.NodeID,
 		"members":         members,
 	})
 }
 
-// SetupRouter configura as rotas HTTP e retorna o router Gin.
-// Esta função é EXPORTADA (começa com letra maiúscula) para ser usada pelo main.go.
+// getHandler (Inalterado)
+func (s *Store) getHandler(c *gin.Context) {
+	key := c.Param("key")
+	s.mu.Lock() // Usa a mu do Store definido em store.go
+	value, ok := s.data[key]
+	s.mu.Unlock()
+	if ok {
+		c.JSON(http.StatusOK, gin.H{"key": key, "value": value})
+	} else {
+		c.JSON(http.StatusNotFound, gin.H{"error": "key not found"})
+	}
+}
+
+// setHandler (Inalterado - Usa Redirect)
+func (s *Store) setHandler(c *gin.Context) {
+	var req struct {
+		Value string `json:"value" binding:"required"`
+	}
+	if err := c.BindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request payload: 'value' is required"})
+		return
+	}
+	key := c.Param("key")
+
+	_, err := s.applyLogInternal("set", key, req.Value, "", "")
+	if err != nil {
+		if err.Error() == "node is not the leader" {
+			leaderAddr := string(s.RaftLog.Leader())
+			log.Printf("[API Set] Not leader, redirecting client to leader: %s\n", leaderAddr)
+			c.JSON(http.StatusTemporaryRedirect, gin.H{
+				"error":  "Not the leader. Redirect to the leader for write operations.",
+				"leader": leaderAddr,
+			})
+		} else {
+			log.Printf("[API Set] Error applying log for key '%s': %v\n", key, err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to apply log: %v", err)})
+		}
+		return
+	}
+	log.Printf("[API Set] Successfully applied 'set' for key '%s'\n", key)
+	c.JSON(http.StatusOK, gin.H{"status": "applied", "key": key, "value": req.Value})
+}
+
+// --- Handler Interno (Atualizado para StandardResponse) ---
+
+// handleInternalPing responde a pings internos do follower
+func (s *Store) handleInternalPing(c *gin.Context) {
+	// Obtém o RequestID da query param (ou gera um se não houver)
+	// *** ALTERAÇÃO: Usa um ID padrão se não fornecido ***
+	reqID := c.DefaultQuery("requestId", fmt.Sprintf("internal-ping-%d", time.Now().UnixNano()))
+
+	if s.RaftLog.State() != raft.Leader {
+		log.Printf("[Internal Ping WARN] Received internal ping (ReqID: %s), but not leader.\n", reqID)
+		c.JSON(http.StatusServiceUnavailable, NewErrorResponse(reqID, s.NodeID, "NOT_LEADER", "This node is not the leader"))
+		return
+	}
+
+	log.Printf("[Internal Ping] Received internal ping (ReqID: %s). Responding pong.\n", reqID)
+	// Usa NewSuccessResponse para formatar a resposta
+	respPayload := gin.H{"status": "pong", "leaderId": s.NodeID}
+	// *** ALTERAÇÃO: Usa NewSuccessResponse consistentemente ***
+	c.JSON(http.StatusOK, NewSuccessResponse(reqID, s.NodeID, respPayload))
+}
+
+// --- Handler de Debug (Atualizado para usar StandardResponse e chamada GET) ---
+
+// handleDebugPingLeader dispara o ping para o líder e retorna o RTT.
+func (s *Store) handleDebugPingLeader(c *gin.Context) {
+	// Gera um ID para esta operação de debug
+	debugReqID := fmt.Sprintf("debug-ping-%d", time.Now().UnixNano())
+	log.Printf("[Debug Ping] Received request (ReqID: %s) to ping the leader from node %s.\n", debugReqID, s.NodeID)
+
+	if s.RaftLog.State() == raft.Leader {
+		log.Println("[Debug Ping] This node is the leader. Responding directly.")
+		// Resposta consistente, mesmo sendo o líder
+		c.JSON(http.StatusOK, gin.H{
+			"requestId":         debugReqID,
+			"status":            "pong_from_self",
+			"message":           "This node is the leader.",
+			"queried_node_id":   s.NodeID,
+			"queried_node_addr": s.RaftAddr,
+			"ping_rtt_ms":       0.0,
+			"leader_response":   NewSuccessResponse(debugReqID, s.NodeID, gin.H{"status": "pong", "leaderId": s.NodeID}), // Inclui uma resposta padrão
+		})
+		return
+	}
+
+	leaderRaftAddr := string(s.RaftLog.Leader())
+	if leaderRaftAddr == "" {
+		log.Println("[Debug Ping ERROR] No leader known.")
+		// *** ALTERAÇÃO: Retorna StandardResponse no erro ***
+		c.JSON(http.StatusServiceUnavailable, NewErrorResponse(debugReqID, s.NodeID, "NO_LEADER_KNOWN", "No leader known by this follower"))
+		return
+	}
+
+	// Assume porta 8080 (TODO: Tornar dinâmico)
+	leaderHost := strings.Split(leaderRaftAddr, ":")[0]
+	leaderAPIPort := 8080
+	// *** ALTERAÇÃO: Passa requestId como query param para o GET ***
+	leaderPingURL := fmt.Sprintf("http://%s:%d/internal/ping?requestId=%s", leaderHost, leaderAPIPort, debugReqID)
+
+	log.Printf("[Debug Ping] Sending internal ping request (ReqID: %s) to leader at %s...\n", debugReqID, leaderPingURL)
+
+	client := &http.Client{Timeout: 3 * time.Second}
+	startTime := time.Now()
+	// *** ALTERAÇÃO: Usa http.Get para o endpoint /internal/ping ***
+	resp, err := client.Get(leaderPingURL)
+	endTime := time.Now()
+	pingRTT := endTime.Sub(startTime).Seconds() * 1000
+
+	// Trata erro de comunicação
+	if err != nil {
+		log.Printf("[Debug Ping ERROR] Failed sending ping (ReqID: %s) to leader %s: %v\n", debugReqID, leaderPingURL, err)
+		// *** ALTERAÇÃO: Retorna estrutura de erro mais consistente ***
+		c.JSON(http.StatusBadGateway, gin.H{
+			"requestId":    debugReqID,
+			"error_code":   "LEADER_UNREACHABLE",
+			"error_message":fmt.Sprintf("Failed to reach leader at %s", leaderPingURL),
+			"details":      err.Error(),
+			"ping_rtt_ms":  pingRTT,
+			"current_node": s.NodeID,
+		})
+		return
+	}
+	defer resp.Body.Close()
+
+	// Lê resposta do líder
+	bodyBytes, readErr := io.ReadAll(resp.Body)
+	if readErr != nil {
+		log.Printf("[Debug Ping ERROR] Failed reading response body (ReqID: %s) from leader %s: %v\n", debugReqID, leaderPingURL, readErr)
+		// *** ALTERAÇÃO: Retorna estrutura de erro mais consistente ***
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"requestId":    debugReqID,
+			"error_code":   "LEADER_RESPONSE_READ_ERROR",
+			"error_message":"Failed to read response body from leader",
+			"leader_url":   leaderPingURL,
+			"status_code":  resp.StatusCode,
+			"ping_rtt_ms":  pingRTT,
+			"current_node": s.NodeID,
+		})
+		return
+	}
+
+	log.Printf("[Debug Ping] Received response (ReqID: %s) from leader %s. Status: %d. RTT: %.2f ms\n",
+		debugReqID, leaderPingURL, resp.StatusCode, pingRTT)
+
+	// Tenta deserializar a StandardResponse do líder
+	var leaderResp StandardResponse
+	if err := json.Unmarshal(bodyBytes, &leaderResp); err != nil {
+		// Se líder não retornou StandardResponse, mostra erro e raw body
+		log.Printf("[Debug Ping WARN] Leader response (ReqID: %s) was not a StandardResponse: %v. Body: %s\n", debugReqID, err, string(bodyBytes))
+		c.JSON(http.StatusOK, gin.H{ // Retorna 200 OK, mas indica o problema na resposta
+			"requestId":    debugReqID,
+			"ping_rtt_ms":  pingRTT,
+			"leader_url":   leaderPingURL,
+			"leader_code":  resp.StatusCode,
+			"leader_resp":  gin.H{"raw_response": string(bodyBytes)}, // Retorna raw
+			"current_node": s.NodeID,
+			"warning":      "Leader response format was not StandardResponse",
+		})
+		return
+	}
+
+	// Monta a resposta final incluindo o RTT e a StandardResponse do líder
+	finalResponse := gin.H{
+		"requestId":    debugReqID,
+		"ping_rtt_ms":  pingRTT,
+		"leader_url":   leaderPingURL,
+		"leader_code":  resp.StatusCode, // Código HTTP da resposta do líder
+		"leader_resp":  leaderResp,      // A StandardResponse completa do líder
+		"current_node": s.NodeID,
+	}
+	// Usa o status code retornado pelo líder para a resposta final ao cliente
+	c.JSON(resp.StatusCode, finalResponse)
+}
+
+// SetupRouter configura as rotas HTTP, incluindo as novas.
 func SetupRouter(s *Store) *gin.Engine {
-	// gin.SetMode(gin.ReleaseMode) // Descomentar para produção
+	// gin.SetMode(gin.ReleaseMode)
 	r := gin.Default()
 
-	// Define os endpoints
-	r.GET("/status", s.statusHandler)         // Status do nó atual
-	r.POST("/join", s.joinHandler)           // Pedido para juntar ao cluster
-	r.POST("/leave", s.leaveHandler)         // Pedido para sair do cluster
-	r.GET("/members", s.membersHandler)       // Lista de membros do cluster (da FSM)
-	r.GET("/data/:key", s.getHandler)        // Obter valor da FSM
-	r.POST("/data/:key", s.setHandler)       // Definir valor via Raft
+	// Endpoints Externos/Públicos
+	r.GET("/status", s.statusHandler)
+	r.POST("/join", s.joinHandler)
+	r.POST("/leave", s.leaveHandler)
+	r.GET("/members", s.membersHandler)
+	r.GET("/data/:key", s.getHandler)
+	r.POST("/data/:key", s.setHandler)
+	// Endpoint de Debug
+	r.GET("/debug/ping-leader", s.handleDebugPingLeader)
 
-	log.Println("Gin router configured successfully.")
+	// Endpoints Internos (para comunicação Servidor-Servidor)
+	internalGroup := r.Group("/internal")
+	{
+		// Endpoint Interno de Ping (agora GET)
+		internalGroup.GET("/ping", s.handleInternalPing)
+		// Adicionar outros endpoints internos aqui (ex: POST /internal/openPack usando StandardRequest/StandardResponse)
+		// internalGroup.POST("/openpack", s.handleInternalOpenPack) // Exemplo
+	}
+
+	log.Println("Gin router configured with external, internal, and debug routes.")
 	return r
 }
+
