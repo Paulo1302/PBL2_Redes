@@ -20,7 +20,9 @@ func userMenu(nc *nats.Conn) {
 	for {
 		id := menuInicial(nc, reader)
 		if id != 0 {
+			sub := pubsub.LoggedIn(nc, id)
 			menuPrincipal(nc, id, reader)
+			sub.Unsubscribe()
 		}
 	}
 }
@@ -72,6 +74,7 @@ func menuInicial(nc *nats.Conn, reader *bufio.Reader) int {
 func menuPrincipal(nc *nats.Conn, id int, reader *bufio.Reader) {
 	var cards []int
 	var err error
+
 
 	for {
 		fmt.Println("1 - Abrir pacote")

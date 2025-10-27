@@ -2,10 +2,10 @@
 
 # Comandos originais preservados
 broker:
-	@sudo docker run -p 4222:4222 nats
+	@docker run -p 4222:4222 nats
 
 rmAll:
-	@sudo docker system prune -a --volumes
+	@docker system prune -a --volumes
 
 # Comandos corrigidos para estrutura atual
 help:
@@ -22,7 +22,7 @@ help:
 # Build server (CORRIGIDO: vai para server/ não cardGame/server)
 build:
 	@echo "Building server..."
-	@cd server && go build -o ../game-server .
+	@docker build -f docker/server.dockerfile -t meu-servidor-raft .
 
 # Build client
 build-client:
@@ -30,12 +30,17 @@ build-client:
 	@cd client && go build -o ../game-client .
 
 # Run server locally
-run: build
+run-leader: 
 	@echo "Starting server..."
-	@SERVER_ID=local-server \
-	HTTP_PORT=8080 \
-	IS_BOOTSTRAP=true \
-	./game-server
+	@docker run -d --name raft-leader --network=host meu-servidor-raft
+
+run-follower1: 
+	@echo "Starting server..."
+	@docker run -d --name raft-follower1 --network=host meu-servidor-raft --id "follower1" --port 8081 --raft-port 7001 --peers "192.168.0.21"
+
+run-follower2: 
+	@echo "Starting server..."
+	@docker run -d --name raft-follower2 --network=host meu-servidor-raft --id "follower2" --port 8082 --raft-port 7002 --peers "192.168.0.21"
 
 # Run development client
 dev-client:

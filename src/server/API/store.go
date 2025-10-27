@@ -16,6 +16,9 @@ type command struct {
 	Value      string `json:"value"`
 	MemberID   string `json:"member_id"`
 	MemberAddr string `json:"member_addr"`
+	Count      int
+	PlayerID   int    `json:"player_id,omitempty"`
+    Cards      []int  `json:"cards,omitempty"`
 }
 
 // Store é a nossa FSM (Finite State Machine)
@@ -24,6 +27,8 @@ type Store struct {
 	mu       sync.Mutex
 	data     map[string]string             // Dados chave-valor replicados
 	members  map[string]raft.ServerAddress // Lista sincronizada de membros do cluster
+	players  map[int]Player
+	count    int 
 	RaftLog  *raft.Raft                    // Referência à instância Raft (preenchida pelo main)
 	NodeID   string                        // ID deste nó (preenchido pelo main)
 	RaftAddr string                        // Endereço Raft deste nó (preenchido pelo main)
@@ -34,6 +39,8 @@ func NewStore() *Store {
 	return &Store{
 		data:    make(map[string]string),
 		members: make(map[string]raft.ServerAddress),
+		players: make(map[int]Player),
+		count: 0,
 	}
 }
 
@@ -71,6 +78,12 @@ func (s *Store) Apply(log *raft.Log) interface{} {
 		delete(s.members, c.MemberID)
 		fmt.Printf("[FSM Apply] Removed member '%s'\n", c.MemberID) // Log de depuração
 		return nil // Sucesso
+	case "create_player":
+		s.players[c.PlayerID] = Player{
+			Id:    c.PlayerID,
+			Cards: c.Cards,
+		}
+		return nil
 	default:
 		// Retorna um erro se o comando for desconhecido
 		return fmt.Errorf("unrecognized command op: %s", c.Op)

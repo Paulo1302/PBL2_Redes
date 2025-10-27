@@ -13,7 +13,7 @@ import (
 
 
 func BrokerConnect(serverNumber int) *nats.Conn {
-	url := "nats://127.0.0.1:" + strconv.Itoa(serverNumber + 4222)
+	url := "nats://192.168.0.21:" + strconv.Itoa(serverNumber + 4222)
 	//fmt.Println(url)
 	nc,_ := nats.Connect(url)
 	
@@ -42,7 +42,7 @@ func RequestCreateAccount(nc *nats.Conn) int {
 	msg := make(map[string]int)
 	fmt.Println("Enviado:", msg)
 	json.Unmarshal(response.Data, &msg)
-	return msg["client_ID"]
+	return msg["player_id"]
 }
 
 
@@ -275,6 +275,8 @@ func ManageGame(nc *nats.Conn, id int, card chan(int), ready chan(struct{}), rou
 	sub.Unsubscribe()
 }
 
+
+
 func imAlive(nc *nats.Conn, id int64, ctx context.Context){
 	
 	for{
@@ -293,6 +295,22 @@ func imAlive(nc *nats.Conn, id int64, ctx context.Context){
 
 }
 
+func LoggedIn(nc *nats.Conn, id int) *nats.Subscription {
+	sub, _ := nc.Subscribe("topic.loggedIn", func(m *nats.Msg) {
+		var payload map[string]any
+		json.Unmarshal(m.Data, &payload)
+		
+		if payload["client_id"].(int)!=id {
+			return
+		}
+
+		payload["client_ping"] = time.Now().UnixMilli()
+		data,_ := json.Marshal(payload)
+		
+		nc.Publish(m.Reply, data)
+	})
+	return sub
+}
 
 func Heartbeat(nc *nats.Conn, value *int64) {
 	ping := make(map[string]int64)
@@ -301,3 +319,4 @@ func Heartbeat(nc *nats.Conn, value *int64) {
 		*value = ping["server_ping"]
 	})
 }
+

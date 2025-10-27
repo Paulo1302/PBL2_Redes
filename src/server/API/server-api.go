@@ -15,8 +15,6 @@ import (
 	"github.com/hashicorp/raft"
 )
 
-// --- Estruturas Padrão (Definidas aqui para exemplo, idealmente em types.go) ---
-
 // StandardRequest define a estrutura para requisições (NATS e REST Interno)
 type StandardRequest struct {
 	RequestID     string          `json:"requestId"`
@@ -78,7 +76,8 @@ func NewSuccessResponse(reqID, responderID string, payload interface{}) Standard
 
 // applyLogInternal (Inalterada - continua necessária para o Líder processar)
 // Assume que 'command' está definido em store.go
-func (s *Store) applyLogInternal(op string, key string, value string, memberID string, memberAddr string) (interface{}, error) {
+func (s *Store) applyLogInternal(op string, key string, value string, memberID string, memberAddr string, player *Player, idCount int) (any, error) {
+	fmt.Println("APPLY INTERNAL")
 	if s.RaftLog.State() != raft.Leader {
 		return nil, fmt.Errorf("node is not the leader")
 	}
@@ -89,17 +88,29 @@ func (s *Store) applyLogInternal(op string, key string, value string, memberID s
 		MemberID:   memberID,
 		MemberAddr: memberAddr,
 	}
-	b, err := json.Marshal(cmd)
-	if err != nil {
-		log.Printf("[applyLogInternal ERROR] Marshalling command (%s): %v\n", op, err)
-		return nil, fmt.Errorf("failed to marshal command: %w", err)
+	if player != nil {
+		cmd.Count = idCount
+		cmd.PlayerID = player.Id
+		cmd.Cards = player.Cards
 	}
 
+	b, err := json.Marshal(cmd)
+	if err != nil {
+		fmt.Printf("[applyLogInternal ERROR] Marshalling command (%s): %v\n", op, err)
+		return nil, fmt.Errorf("failed to marshal command: %w", err)
+	}
+	fmt.Println("MID1 APPLY INTERNAL")
+
 	applyFuture := s.RaftLog.Apply(b, 500*time.Millisecond)
+
+	fmt.Println("MID2 APPLY INTERNAL")
+	
 	if err := applyFuture.Error(); err != nil {
-		log.Printf("[applyLogInternal ERROR] Applying command (%s) to Raft: %v\n", op, err)
+		fmt.Printf("[applyLogInternal ERROR] Applying command (%s) to Raft: %v\n", op, err)
 		return nil, fmt.Errorf("failed to apply command to Raft: %w", err)
 	}
+
+	fmt.Println("APPLY INTERNAL DONE")
 
 	return applyFuture.Response(), nil
 }
@@ -237,7 +248,7 @@ func (s *Store) joinHandler(c *gin.Context) {
 	}
 	log.Printf("[API Join] Raft AddVoter successful for Node '%s'\n", req.ID)
 
-	_, err := s.applyLogInternal("add_member", "", "", req.ID, req.Address)
+	_, err := s.applyLogInternal("add_member", "", "", req.ID, req.Address, nil, 0)
 	if err != nil {
 		log.Printf("[API Join] Error applying 'add_member' to FSM for Node '%s': %v (Raft AddVoter succeeded)\n", req.ID, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to apply member addition to FSM: %v", err)})
@@ -278,7 +289,7 @@ func (s *Store) leaveHandler(c *gin.Context) {
 	}
 	log.Printf("[API Leave] Raft RemoveServer successful for Node '%s'\n", req.ID)
 
-	_, err := s.applyLogInternal("remove_member", "", "", req.ID, "")
+	_, err := s.applyLogInternal("remove_member", "", "", req.ID, "", nil, 0)
 	if err != nil {
 		log.Printf("[API Leave] Error applying 'remove_member' to FSM for Node '%s': %v (Raft RemoveServer succeeded)\n", req.ID, err)
 		// Continua
@@ -322,7 +333,7 @@ func (s *Store) setHandler(c *gin.Context) {
 	}
 	key := c.Param("key")
 
-	_, err := s.applyLogInternal("set", key, req.Value, "", "")
+	_, err := s.applyLogInternal("set", key, req.Value, "", "", nil, 0)
 	if err != nil {
 		if err.Error() == "node is not the leader" {
 			leaderAddr := string(s.RaftLog.Leader())
@@ -361,6 +372,37 @@ func (s *Store) handleInternalPing(c *gin.Context) {
 	// *** ALTERAÇÃO: Usa NewSuccessResponse consistentemente ***
 	c.JSON(http.StatusOK, NewSuccessResponse(reqID, s.NodeID, respPayload))
 }
+
+func (s *Store) handleInternalCreatePlayer(c *gin.Context) {
+	var req StandardRequest
+	if err := c.BindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, NewErrorResponse("none", s.NodeID, "INVALID_JSON", err.Error()))
+		return
+	}
+
+	var player Player
+	if err := json.Unmarshal(req.Payload, &player); err != nil {
+		c.JSON(http.StatusBadRequest, NewErrorResponse(req.RequestID, s.NodeID, "INVALID_PLAYER", err.Error()))
+		return
+	}
+
+	if s.RaftLog.State() != raft.Leader {
+		resp := s.forwardToLeaderViaREST(req)
+		c.JSON(http.StatusOK, resp)
+		return
+	}
+
+	playerID, err := s.CreatePlayer()
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, NewErrorResponse(req.RequestID, s.NodeID, "RAFT_APPLY_ERROR", err.Error()))
+		return
+	}
+
+	c.JSON(http.StatusOK, NewSuccessResponse(req.RequestID, s.NodeID, gin.H{"status": "player created","player_id": playerID,}))
+}
+
+
 
 // --- Handler de Debug (Atualizado para usar StandardResponse e chamada GET) ---
 
@@ -494,6 +536,7 @@ func SetupRouter(s *Store) *gin.Engine {
 	{
 		// Endpoint Interno de Ping (agora GET)
 		internalGroup.GET("/ping", s.handleInternalPing)
+		internalGroup.POST("/create_player", s.handleInternalCreatePlayer)
 		// Adicionar outros endpoints internos aqui (ex: POST /internal/openPack usando StandardRequest/StandardResponse)
 		// internalGroup.POST("/openpack", s.handleInternalOpenPack) // Exemplo
 	}

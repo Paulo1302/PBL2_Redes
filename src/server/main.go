@@ -339,8 +339,6 @@ func main() {
 		log.Fatal("O endereço Raft (--raft-addr) deve ser fornecido (ex: --raft-addr=192.168.1.10:7000).")
 	}
 
-	rand.Seed(time.Now().UnixNano()) // Inicializa gerador para timeouts randomizados
-
 	log.Printf("Starting Raft node with config: ID=%s, HTTP Port=%d, Raft Port=%d, Bootstrap=%t, Peers=%s, Raft Addr=%s\n",
 		nodeID, httpPort, raftPort, bootstrap, peersStr, raftAddr)
 
@@ -349,12 +347,8 @@ func main() {
 
 	// Inicializa NATS (sem bloquear o arranque do Raft)
 	go func() {
-		if _, err := API.BrokerConnect(0); err != nil { // Assumindo serverNumber 0 para BrokerConnect
-			log.Printf("WARN: Failed to connect to NATS initially: %v. Raft will continue.", err)
-		} else {
-			API.SetupPS() // Assume que SetupPS faz o necessário com a conexão NATS
-			log.Println("NATS Pub/Sub initialized successfully.")
-		}
+		API.SetupPS(store)
+		log.Println("NATS Pub/Sub initialized successfully.")
 	}()
 
 	// Configura e inicializa a instância do Raft
