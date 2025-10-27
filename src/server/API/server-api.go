@@ -6,8 +6,11 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"maps"
 	"math/rand" // Importado para backoff randomizado
+	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -191,6 +194,7 @@ func (s *Store) forwardToLeaderViaREST(req StandardRequest) StandardResponse {
 
 		log.Printf("[Forwarding] Success for ReqID '%s': Received response from leader %s (Status: %d). IsSuccess: %t\n", req.RequestID, leaderAPIURL, resp.StatusCode, leaderResp.IsSuccess)
 		// Retorna a resposta recebida do líder
+		fmt.Println(string(leaderResp.Payload))
 		return leaderResp
 
 	} // Fim do loop for retries
@@ -402,6 +406,85 @@ func (s *Store) handleInternalCreatePlayer(c *gin.Context) {
 	c.JSON(http.StatusOK, NewSuccessResponse(req.RequestID, s.NodeID, gin.H{"status": "player created","player_id": playerID,}))
 }
 
+func (s *Store) handleInternalIsLogged(c *gin.Context) {
+	var req struct {
+		ClientID int `json:"client_id"`
+	}
+	if err := c.BindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, NewErrorResponse("none", s.NodeID, "INVALID_JSON", err.Error()))
+		return
+	}
+
+	logged := isLogged(req.ClientID)
+	fmt.Println("algooo")
+	c.JSON(http.StatusOK, NewSuccessResponse("none", s.NodeID, gin.H{
+		"logged": logged,
+	}))
+}
+
+func (s *Store) handleLogin(c *gin.Context) {
+	var req StandardRequest
+
+	if err := c.BindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, NewErrorResponse("none", s.NodeID, "INVALID_JSON", err.Error()))
+		return
+	}
+	var data struct {
+		ClientID int `json:"client_id"`
+	}
+	json.Unmarshal(req.Payload, &data)
+	fmt.Println(data)
+	logged := s.checkIfAnyNodeLogged(data.ClientID)
+
+	c.JSON(http.StatusOK, NewSuccessResponse("none", s.NodeID, gin.H{
+		"logged": logged,
+	}))
+}
+
+
+func (s *Store) checkIfAnyNodeLogged(clientID int) bool {
+	s.mu.Lock()
+	members := make(map[string]raft.ServerAddress)
+	maps.Copy(members, s.members)
+	s.mu.Unlock()
+
+	fmt.Println("COPIOU")
+	type respData struct {
+		Logged bool `json:"logged"`
+	}
+	for nodeID, addr := range members {
+		host, _, _ := net.SplitHostPort(string(addr))
+		url := fmt.Sprintf("http://%s/internal/is_logged", net.JoinHostPort(host, strconv.Itoa(8080)))
+		fmt.Println(url)
+		body, _ := json.Marshal(map[string]int{"client_id": clientID})
+		client := &http.Client{
+			Timeout: 200 * time.Millisecond, // ou 1 segundo se quiser garantir
+		}
+		resp, err := client.Post(url, "application/json", bytes.NewReader(body))
+		if err != nil {
+			fmt.Printf("[WARN] Falha ao consultar %s (%s): %v\n", nodeID, addr, err)
+			continue
+		}
+		defer resp.Body.Close()
+
+		var standard StandardResponse
+		if err := json.NewDecoder(resp.Body).Decode(&standard); err != nil {
+			fmt.Printf("[WARN] Resposta inválida de %s: %v\n", nodeID, err)
+			continue
+		}
+		var data respData
+
+		json.Unmarshal(standard.Payload, &data)
+		fmt.Println("Zorra 2:",data.Logged)
+		if data.Logged {
+			return true
+		}	
+		
+	}
+
+	// Se nenhum retornou true
+	return false
+}
 
 
 // --- Handler de Debug (Atualizado para usar StandardResponse e chamada GET) ---
@@ -537,6 +620,8 @@ func SetupRouter(s *Store) *gin.Engine {
 		// Endpoint Interno de Ping (agora GET)
 		internalGroup.GET("/ping", s.handleInternalPing)
 		internalGroup.POST("/create_player", s.handleInternalCreatePlayer)
+		internalGroup.POST("/is_logged", s.handleInternalIsLogged)
+		internalGroup.POST("/login", s.handleLogin)
 		// Adicionar outros endpoints internos aqui (ex: POST /internal/openPack usando StandardRequest/StandardResponse)
 		// internalGroup.POST("/openpack", s.handleInternalOpenPack) // Exemplo
 	}

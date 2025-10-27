@@ -46,15 +46,15 @@ func RequestCreateAccount(nc *nats.Conn) int {
 }
 
 
-func RequestLogin(nc *nats.Conn, id int) (int,error) {
+func RequestLogin(nc *nats.Conn, id int) (bool,error) {
 	msg := map[string]any{
-			"client_ID": id,
+			"client_id": id,
 		}
 	data,_ := json.Marshal(msg)
 	response,err := nc.Request("topic.login", data, time.Second)
 	if err != nil{
 		fmt.Println(err.Error())
-		return 0, err
+		return false, err
 	}
 	fmt.Println("Enviado:", msg)
 	json.Unmarshal(response.Data, &msg)
@@ -65,7 +65,7 @@ func RequestLogin(nc *nats.Conn, id int) (int,error) {
 		err = nil
 	}
 	
-	return msg["result"].(int), err
+	return msg["result"].(bool), err
 }
 
 
@@ -299,15 +299,11 @@ func LoggedIn(nc *nats.Conn, id int) *nats.Subscription {
 	sub, _ := nc.Subscribe("topic.loggedIn", func(m *nats.Msg) {
 		var payload map[string]any
 		json.Unmarshal(m.Data, &payload)
-		
-		if payload["client_id"].(int)!=id {
+		if int(payload["client_id"].(float64))!=id {
+			fmt.Println(int(payload["client_id"].(float64)))
 			return
 		}
-
-		payload["client_ping"] = time.Now().UnixMilli()
-		data,_ := json.Marshal(payload)
-		
-		nc.Publish(m.Reply, data)
+		nc.Publish(m.Reply, m.Data)
 	})
 	return sub
 }

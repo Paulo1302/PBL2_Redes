@@ -11,6 +11,8 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
+var myConnection *nats.Conn
+
 func SetupPS(s *Store) {
 
 	SetupGameState()
@@ -18,6 +20,8 @@ func SetupPS(s *Store) {
 	nc, _ := BrokerConnect(0)
 	ReplyPing(nc)
 
+	myConnection = nc
+	
 	go func() {
 		for {
 			htb := map[string]int64{"server_ping": time.Now().UnixMilli()}
@@ -26,6 +30,7 @@ func SetupPS(s *Store) {
 	}()
 
 	CreateAccount(nc, s)
+	ClientLogin(nc, s)
 }
 
 // BrokerConnect conecta ao broker NATS com tratamento de erro robusto
@@ -155,11 +160,65 @@ func CreateAccount(nc *nats.Conn, s *Store) {
 	})
 }
 
-// func ClientLogin(nc *nats.Conn)  {
-// 	sub, _ := nc.Subscribe("topic.loggedIn", func(m *nats.Msg) {
 
-// 	})
-// }
+func isLogged(id int) bool {
+	payload := map[string]int{
+		"client_id": id,
+	}
+	_, err := RequestMessage(myConnection, "topic.loggedIn", payload, 50 * time.Millisecond)
+	
+	if err != nil {
+		return false
+	}else {
+		return true
+	}
+}
+
+
+func ClientLogin(nc *nats.Conn, s *Store) {
+	nc.Subscribe("topic.login", func(msg *nats.Msg) {
+		var payload map[string]any
+		json.Unmarshal(msg.Data, &payload)
+		
+
+		// Só o líder coordena o login
+		if s.RaftLog.State() != raft.Leader {
+			leaderAddr := string(s.RaftLog.Leader())
+			if leaderAddr == "" {
+				nc.Publish(msg.Reply, []byte(`{"error":"NO_LEADER"}`))
+				return
+			}
+			req := StandardRequest{
+				RequestID:     fmt.Sprintf("%d", time.Now().UnixNano()),
+				OperationType: "login",
+				Payload:       msg.Data,
+			}
+			x := s.forwardToLeaderViaREST(req)
+			json.Unmarshal(x.Payload, &payload)
+			rsp := map[string]any{
+				"err" : nil,
+				"result" : payload["logged"],
+			}
+			data,_:=json.Marshal(rsp)
+			nc.Publish(msg.Reply, data)
+			return
+		}
+		// LÍDER: consulta todos os nós (inclusive ele mesmo)
+		fmt.Println("SOU LIDER")
+		clientID := int(payload["client_id"].(float64))
+		logged := s.checkIfAnyNodeLogged(clientID)
+
+		resp := map[string]any{
+			"node":       s.NodeID,
+			"is_leader":  true,
+			"client_id":  clientID,
+			"result": logged,
+		}
+		data, _ := json.Marshal(resp)
+		nc.Publish(msg.Reply, data)
+	})
+}
+
 
 // func getSmth() map[string]any {
 // 	resp, _ := http.Get("http://localhost:8080/status")

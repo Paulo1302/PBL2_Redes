@@ -50,12 +50,12 @@ func menuInicial(nc *nats.Conn, reader *bufio.Reader) int {
 			text, _ := reader.ReadString('\n')
 			text = strings.TrimSpace(text)
 			id, _ := strconv.Atoi(text)
-			userID, err := pubsub.RequestLogin(nc, id)
-			if err != nil {
-				fmt.Println("Erro no login:", err)
+			successful, err := pubsub.RequestLogin(nc, id)
+			if err != nil || successful{
+				fmt.Println("Erro no login")
 			} else {
-				fmt.Println("Login bem-sucedido! ID:", userID)
-				return userID
+				fmt.Println("Login bem-sucedido!")
+				return id
 			}
 		case "3":
 			userID := pubsub.RequestCreateAccount(nc)
