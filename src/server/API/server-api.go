@@ -79,7 +79,7 @@ func NewSuccessResponse(reqID, responderID string, payload interface{}) Standard
 
 // applyLogInternal (Inalterada - continua necessária para o Líder processar)
 // Assume que 'command' está definido em store.go
-func (s *Store) applyLogInternal(op string, key string, value string, memberID string, memberAddr string, player *Player, idCount int) (any, error) {
+func (s *Store) applyLogInternal(op string, key string, value string, memberID string, memberAddr string, player *Player, idCount int, cards *[][3]int) (any, error) {
 	fmt.Println("APPLY INTERNAL")
 	if s.RaftLog.State() != raft.Leader {
 		return nil, fmt.Errorf("node is not the leader")
@@ -94,8 +94,12 @@ func (s *Store) applyLogInternal(op string, key string, value string, memberID s
 	if player != nil {
 		cmd.Count = idCount
 		cmd.PlayerID = player.Id
-		cmd.Cards = player.Cards
+		cmd.PlayerCards = player.Cards
 	}
+	if cards!=nil {
+		cmd.Cards = *cards
+	}
+	
 
 	b, err := json.Marshal(cmd)
 	if err != nil {
@@ -195,6 +199,7 @@ func (s *Store) forwardToLeaderViaREST(req StandardRequest) StandardResponse {
 		log.Printf("[Forwarding] Success for ReqID '%s': Received response from leader %s (Status: %d). IsSuccess: %t\n", req.RequestID, leaderAPIURL, resp.StatusCode, leaderResp.IsSuccess)
 		// Retorna a resposta recebida do líder
 		fmt.Println(string(leaderResp.Payload))
+		fmt.Println(s.Cards)
 		return leaderResp
 
 	} // Fim do loop for retries
@@ -252,7 +257,7 @@ func (s *Store) joinHandler(c *gin.Context) {
 	}
 	log.Printf("[API Join] Raft AddVoter successful for Node '%s'\n", req.ID)
 
-	_, err := s.applyLogInternal("add_member", "", "", req.ID, req.Address, nil, 0)
+	_, err := s.applyLogInternal("add_member", "", "", req.ID, req.Address, nil, 0, nil)
 	if err != nil {
 		log.Printf("[API Join] Error applying 'add_member' to FSM for Node '%s': %v (Raft AddVoter succeeded)\n", req.ID, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to apply member addition to FSM: %v", err)})
@@ -293,7 +298,7 @@ func (s *Store) leaveHandler(c *gin.Context) {
 	}
 	log.Printf("[API Leave] Raft RemoveServer successful for Node '%s'\n", req.ID)
 
-	_, err := s.applyLogInternal("remove_member", "", "", req.ID, "", nil, 0)
+	_, err := s.applyLogInternal("remove_member", "", "", req.ID, "", nil, 0, nil)
 	if err != nil {
 		log.Printf("[API Leave] Error applying 'remove_member' to FSM for Node '%s': %v (Raft RemoveServer succeeded)\n", req.ID, err)
 		// Continua
@@ -337,7 +342,7 @@ func (s *Store) setHandler(c *gin.Context) {
 	}
 	key := c.Param("key")
 
-	_, err := s.applyLogInternal("set", key, req.Value, "", "", nil, 0)
+	_, err := s.applyLogInternal("set", key, req.Value, "", "", nil, 0, nil)
 	if err != nil {
 		if err.Error() == "node is not the leader" {
 			leaderAddr := string(s.RaftLog.Leader())
@@ -486,6 +491,37 @@ func (s *Store) checkIfAnyNodeLogged(clientID int) bool {
 	return false
 }
 
+func (s *Store) handleInternalOpenPack(c *gin.Context) {
+	var req StandardRequest
+	if err := c.BindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, NewErrorResponse("none", s.NodeID, "INVALID_JSON", err.Error()))
+		return
+	}
+
+	var player struct {
+		ClientID int `json:"client_id"`
+	}
+	if err := json.Unmarshal(req.Payload, &player); err != nil {
+		c.JSON(http.StatusBadRequest, NewErrorResponse(req.RequestID, s.NodeID, "INVALID_PLAYER", err.Error()))
+		return
+	}
+	fmt.Println(player)
+	if s.RaftLog.State() != raft.Leader {
+		resp := s.forwardToLeaderViaREST(req)
+		c.JSON(http.StatusOK, resp)
+		return
+	}
+
+
+	result, err := s.OpenPack(player.ClientID)
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, NewErrorResponse(req.RequestID, s.NodeID, "RAFT_APPLY_ERROR", err.Error()))
+		return
+	}
+
+	c.JSON(http.StatusOK, NewSuccessResponse(req.RequestID, s.NodeID, gin.H{"status": "pack open","player_id": player.ClientID,"result":result}))
+}
 
 // --- Handler de Debug (Atualizado para usar StandardResponse e chamada GET) ---
 
@@ -622,6 +658,7 @@ func SetupRouter(s *Store) *gin.Engine {
 		internalGroup.POST("/create_player", s.handleInternalCreatePlayer)
 		internalGroup.POST("/is_logged", s.handleInternalIsLogged)
 		internalGroup.POST("/login", s.handleLogin)
+		internalGroup.POST("/open_pack", s.handleInternalOpenPack)
 		// Adicionar outros endpoints internos aqui (ex: POST /internal/openPack usando StandardRequest/StandardResponse)
 		// internalGroup.POST("/openpack", s.handleInternalOpenPack) // Exemplo
 	}

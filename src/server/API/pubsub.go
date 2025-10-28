@@ -15,13 +15,11 @@ var myConnection *nats.Conn
 
 func SetupPS(s *Store) {
 
-	SetupGameState()
-
 	nc, _ := BrokerConnect(0)
 	ReplyPing(nc)
 
 	myConnection = nc
-	
+
 	go func() {
 		for {
 			htb := map[string]int64{"server_ping": time.Now().UnixMilli()}
@@ -31,6 +29,7 @@ func SetupPS(s *Store) {
 
 	CreateAccount(nc, s)
 	ClientLogin(nc, s)
+	ClientOpenPack(nc, s)
 }
 
 // BrokerConnect conecta ao broker NATS com tratamento de erro robusto
@@ -159,30 +158,28 @@ func CreateAccount(nc *nats.Conn, s *Store) {
 	})
 }
 
-
 func isLogged(id int) bool {
 	payload := map[string]int{
 		"client_id": id,
 	}
-	_, err := RequestMessage(myConnection, "topic.loggedIn", payload, 200 * time.Millisecond)
-	
+	_, err := RequestMessage(myConnection, "topic.loggedIn", payload, 200*time.Millisecond)
+
 	if err != nil {
 		return false
-	}else {
+	} else {
 		return true
 	}
 }
-
 
 func ClientLogin(nc *nats.Conn, s *Store) {
 	nc.Subscribe("topic.login", func(msg *nats.Msg) {
 		fmt.Println(s.count)
 		var payload map[string]any
 		json.Unmarshal(msg.Data, &payload)
-		
+
 		if int(payload["client_id"].(float64)) > s.count {
 			payload["err"] = "user not found"
-			data,_ := json.Marshal(payload)
+			data, _ := json.Marshal(payload)
 			nc.Publish(msg.Reply, data)
 			return
 		}
@@ -202,10 +199,10 @@ func ClientLogin(nc *nats.Conn, s *Store) {
 			x := s.forwardToLeaderViaREST(req)
 			json.Unmarshal(x.Payload, &payload)
 			rsp := map[string]any{
-				"err" : nil,
-				"result" : payload["logged"],
+				"err":    nil,
+				"result": payload["logged"],
 			}
-			data,_:=json.Marshal(rsp)
+			data, _ := json.Marshal(rsp)
 			nc.Publish(msg.Reply, data)
 			return
 		}
@@ -215,10 +212,10 @@ func ClientLogin(nc *nats.Conn, s *Store) {
 		logged := s.checkIfAnyNodeLogged(clientID)
 
 		resp := map[string]any{
-			"node":       s.NodeID,
-			"is_leader":  true,
-			"client_id":  clientID,
-			"result": logged,
+			"node":      s.NodeID,
+			"is_leader": true,
+			"client_id": clientID,
+			"result":    logged,
 		}
 		data, _ := json.Marshal(resp)
 		nc.Publish(msg.Reply, data)
@@ -228,19 +225,23 @@ func ClientLogin(nc *nats.Conn, s *Store) {
 func ClientOpenPack(nc *nats.Conn, s *Store) {
 	nc.Subscribe("topic.openPack", func(m *nats.Msg) {
 		fmt.Println("REQUEST OPENPACK")
+		var payload map[string]any
+		json.Unmarshal(m.Data, &payload)
+
 		if s.RaftLog.State() == raft.Leader {
 			fmt.Println("IM LEADER")
-			playerID, err := s.CreatePlayer()
-			fmt.Println("CREATED PLAYER")
+			cards, err := s.OpenPack(int(payload["client_id"].(float64)))
+			fmt.Println("Pack Open")
 			if err != nil {
 				nc.Publish(m.Reply, []byte(`{"error":"RAFT_APPLY_ERROR"}`))
 				fmt.Println("SHIT")
 				return
 			}
-
+			my_cards := *cards
 			payload := map[string]any{
-				"status":    "player created",
-				"player_id": playerID,
+				"status":    "Pack opened",
+				"result":    my_cards,
+				"err":       nil,
 				"node":      s.NodeID,
 				"is_leader": true,
 			}
@@ -253,15 +254,14 @@ func ClientOpenPack(nc *nats.Conn, s *Store) {
 		// se for follower, redireciona pro líder
 		req := StandardRequest{
 			RequestID:     fmt.Sprintf("%d", time.Now().UnixNano()),
-			OperationType: "create_player",
-			Payload:       nil,
+			OperationType: "open_pack",
+			Payload:       m.Data,
 		}
 		resp := s.forwardToLeaderViaREST(req)
 		data, _ := json.Marshal(resp.Payload)
 		nc.Publish(m.Reply, data)
 	})
 }
-
 
 // func getSmth() map[string]any {
 // 	resp, _ := http.Get("http://localhost:8080/status")

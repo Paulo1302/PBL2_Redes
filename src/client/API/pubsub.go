@@ -84,12 +84,17 @@ func RequestOpenPack(nc *nats.Conn, id int) ([]int,error) {
 	json.Unmarshal(response.Data, &msg)
 
 	if msg["err"] != nil {
-		err = errors.New(msg["err"].(string))
-	}else {
-		err = nil
+		return nil, errors.New(msg["err"].(string))
 	}
+	
+	resultSlice := msg["result"].([]any) 
+    cards := make([]int, 0, len(resultSlice))
+	
+	for _, item := range resultSlice {
+        cards = append(cards, int(item.(float64)))
+    }
 
-	return msg["result"].([]int), err
+	return cards, nil
 }
 
 

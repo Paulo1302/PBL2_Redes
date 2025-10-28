@@ -1,6 +1,7 @@
 package API
 
 import (
+	"maps"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -18,7 +19,8 @@ type command struct {
 	MemberAddr string `json:"member_addr"`
 	Count      int
 	PlayerID   int    `json:"player_id,omitempty"`
-    Cards      []int  `json:"cards,omitempty"`
+    PlayerCards      []int  `json:"player_cards,omitempty"`
+	Cards      [][3]int  `json:"cards,omitempty"`
 }
 
 // Store é a nossa FSM (Finite State Machine)
@@ -84,9 +86,17 @@ func (s *Store) Apply(log *raft.Log) interface{} {
 		s.count = c.Count // mantém o contador consistente
 		s.players[c.PlayerID] = Player{
 			Id:    c.PlayerID,
-			Cards: c.Cards,
+			Cards: c.PlayerCards,
 		}
 		fmt.Printf("[FSM Apply] Created player %d (count=%d)\n", c.PlayerID, s.count)
+		return nil
+	case "open_pack":
+		s.players[c.PlayerID] = Player{
+			Id:    c.PlayerID,
+			Cards: c.PlayerCards,
+		}
+		s.Cards = c.Cards
+		fmt.Println("[FSM Apply] Pack open", c.PlayerID, c.PlayerCards, "cards=", c.Cards)
 		return nil
 	default:
 		// Retorna um erro se o comando for desconhecido
@@ -102,19 +112,19 @@ func (s *Store) Snapshot() (raft.FSMSnapshot, error) {
 
 	// Cria cópias profundas dos mapas para garantir a consistência do snapshot
 	dataCopy := make(map[string]string, len(s.data))
-	for k, v := range s.data {
-		dataCopy[k] = v
-	}
+	maps.Copy(dataCopy, s.data)
 	membersCopy := make(map[string]raft.ServerAddress, len(s.members))
-	for k, v := range s.members {
-		membersCopy[k] = v
-	}
+	maps.Copy(membersCopy, s.members)
 
 	fmt.Println("[FSM Snapshot] Creating snapshot") // Log de depuração
 	return &fsmSnapshot{
 		data:    dataCopy,
 		members: membersCopy,
-	}, nil // Sucesso
+		players: maps.Clone(s.players),
+		Cards:   s.Cards,
+		count:   s.count,
+	}, nil
+
 }
 
 // Restore restaura o estado da FSM a partir de um snapshot recebido.
@@ -127,6 +137,9 @@ func (s *Store) Restore(rc io.ReadCloser) error {
 	var snapshotData struct {
 		Data    map[string]string             `json:"data"`
 		Members map[string]raft.ServerAddress `json:"members"`
+		Players map[int]Player                `json:"players"`
+		Cards   [][3]int                      `json:"cards"`
+		Count   int                           `json:"count"`
 	}
 
 	// Decodifica o snapshot
@@ -138,6 +151,9 @@ func (s *Store) Restore(rc io.ReadCloser) error {
 	s.mu.Lock()
 	s.data = snapshotData.Data
 	s.members = snapshotData.Members
+	s.players = snapshotData.Players
+	s.Cards = snapshotData.Cards
+	s.count = snapshotData.Count
 	s.mu.Unlock()
 
 	fmt.Println("[FSM Restore] Restored state from snapshot") // Log de depuração
@@ -151,9 +167,7 @@ func (s *Store) GetMembers() map[string]raft.ServerAddress {
 	defer s.mu.Unlock()
 
 	membersCopy := make(map[string]raft.ServerAddress, len(s.members))
-	for k, v := range s.members {
-		membersCopy[k] = v
-	}
+	maps.Copy(membersCopy, s.members)
 	return membersCopy
 }
 
@@ -165,6 +179,9 @@ func (s *Store) GetMembers() map[string]raft.ServerAddress {
 type fsmSnapshot struct {
 	data    map[string]string
 	members map[string]raft.ServerAddress
+	players map[int]Player
+	Cards   [][3]int
+	count   int
 }
 
 // Persist salva o conteúdo do snapshot (os mapas) no sink fornecido pelo Raft.
@@ -176,10 +193,17 @@ func (f *fsmSnapshot) Persist(sink raft.SnapshotSink) error {
 		payload := struct {
 			Data    map[string]string             `json:"data"`
 			Members map[string]raft.ServerAddress `json:"members"`
+			Players map[int]Player                `json:"players"`
+			Cards   [][3]int                      `json:"cards"`
+			Count   int                           `json:"count"`
 		}{
 			Data:    f.data,
 			Members: f.members,
+			Players: f.players,
+			Cards:   f.Cards,
+			Count:   f.count,
 		}
+
 
 		// Codifica os dados como JSON e escreve no sink
 		encoder := json.NewEncoder(sink)

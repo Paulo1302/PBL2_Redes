@@ -57,11 +57,6 @@ func setupPacks(N int) [][3]int {
         arr[i] = i + 1
     }
 
-    for i := N - 1; i > 0; i-- {
-        j := rand.Intn(i + 1)
-        arr[i], arr[j] = arr[j], arr[i]
-    }
-
 	numPacks := (N + 3 - 1) / 3
 	packs := make([][3]int, numPacks) 
 	
@@ -78,9 +73,6 @@ func setupPacks(N int) [][3]int {
 	return packs
 }
 
-func SetupGameState(){
-	return
-}
 
 
 func (s *Store) CreatePlayer() (int, error) {
@@ -93,7 +85,7 @@ func (s *Store) CreatePlayer() (int, error) {
 	}
 	s.mu.Unlock()
 	fmt.Println("DEBUG1")
-	resp, err := s.applyLogInternal("create_player", "", "", "", "", &newPlayer, s.count)
+	resp, err := s.applyLogInternal("create_player", "", "", "", "", &newPlayer, s.count, nil)
 	fmt.Println("DEBUG2")
 	if err != nil {
 		return 0, err
@@ -109,26 +101,35 @@ func (s *Store) CreatePlayer() (int, error) {
 	return newPlayer.Id, nil
 }
 
-// func (s *Store) OpenPack() (int, error) {
-// 	s.mu.Lock()
+func (s *Store) OpenPack(id int) (*[3]int, error) {
+	s.mu.Lock()
 	
-// 	s.count += 1
-// 	pack := s.Cards[1]
-// 	s.Cards = s.Cards[1:]
-// 	s.mu.Unlock()
-// 	fmt.Println("DEBUG1")
-// 	resp, err := s.applyLogInternal("open_pack", "", "", "", "", nil, 0, &pack)
-// 	fmt.Println("DEBUG2")
-// 	if err != nil {
-// 		return 0, err
-// 	}
+	i:=rand.Intn(len(s.Cards))
+	fmt.Println(i)
+	lastIndex := len(s.Cards) - 1
+	
+	pack := s.Cards[i]
+	s.Cards[i] = s.Cards[lastIndex]
+	s.Cards = s.Cards[:lastIndex]
 
-// 	// se applyLogInternal retornar o valor do FSM.Apply(), ótimo
-// 	if resp != nil {
-// 		if id, ok := resp.(int); ok {
-// 			return id, nil
-// 		}
-// 	}
+	player := s.players[id]
+	player.Cards = append(player.Cards, pack[0], pack[1], pack[2]) 
+	s.players[id] = player
+	
+	s.mu.Unlock()
+	fmt.Println("DEBUG1")
+	resp, err := s.applyLogInternal("open_pack", "", "", "", "", &player, 0, &s.Cards)
+	fmt.Println("DEBUG2")
+	if err != nil {
+		return nil, err
+	}
 
-// 	return newPlayer.Id, nil
-// }
+	// se applyLogInternal retornar o valor do FSM.Apply(), ótimo
+	if resp != nil {
+		if id, ok := resp.([3]int); ok {
+			return &id, nil
+		}
+	}
+
+	return &pack, nil
+}

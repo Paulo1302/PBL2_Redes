@@ -396,7 +396,9 @@ func main() {
 			log.Fatalf("FATAL: Failed to start HTTP server: %v", err)
 		}
 	}()
+	
 
+	fmt.Println("A: ", store)
 	// Aguarda por sinais de interrupção (Ctrl+C) para shutdown gracioso
 	log.Println("Server started. Waiting for interrupt signal (Ctrl+C)...")
 	quit := make(chan os.Signal, 1)
