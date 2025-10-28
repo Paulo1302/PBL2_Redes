@@ -36,7 +36,7 @@ func SetupPS(s *Store) {
 // BrokerConnect conecta ao broker NATS com tratamento de erro robusto
 // O parâmetro serverNumber se torna redundante, mas mantemos por compatibilidade
 func BrokerConnect(serverNumber int) (*nats.Conn, error) {
-	url := "nats://192.168.0.21:" + strconv.Itoa(serverNumber+4222)
+	url := "nats://192.168.8.112:" + strconv.Itoa(serverNumber+4222)
 
 	// Configuração com timeout e reconexão para robustez
 	opts := []nats.Option{
@@ -165,7 +165,7 @@ func isLogged(id int) bool {
 	payload := map[string]int{
 		"client_id": id,
 	}
-	_, err := RequestMessage(myConnection, "topic.loggedIn", payload, 50 * time.Millisecond)
+	_, err := RequestMessage(myConnection, "topic.loggedIn", payload, 200 * time.Millisecond)
 	
 	if err != nil {
 		return false
@@ -180,12 +180,18 @@ func ClientLogin(nc *nats.Conn, s *Store) {
 		var payload map[string]any
 		json.Unmarshal(msg.Data, &payload)
 		
+		if int(payload["client_id"].(float64)) > s.count {
+			payload["err"] = "user not found"
+			data,_ := json.Marshal(payload)
+			nc.Publish(msg.Reply, data)
+			return
+		}
 
 		// Só o líder coordena o login
 		if s.RaftLog.State() != raft.Leader {
 			leaderAddr := string(s.RaftLog.Leader())
 			if leaderAddr == "" {
-				nc.Publish(msg.Reply, []byte(`{"error":"NO_LEADER"}`))
+				nc.Publish(msg.Reply, []byte(`{"err":"NO_LEADER"}`))
 				return
 			}
 			req := StandardRequest{

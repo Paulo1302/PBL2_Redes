@@ -458,7 +458,7 @@ func (s *Store) checkIfAnyNodeLogged(clientID int) bool {
 		fmt.Println(url)
 		body, _ := json.Marshal(map[string]int{"client_id": clientID})
 		client := &http.Client{
-			Timeout: 200 * time.Millisecond, // ou 1 segundo se quiser garantir
+			Timeout: 600 * time.Millisecond, // ou 1 segundo se quiser garantir
 		}
 		resp, err := client.Post(url, "application/json", bytes.NewReader(body))
 		if err != nil {

@@ -50,8 +50,11 @@ func menuInicial(nc *nats.Conn, reader *bufio.Reader) int {
 			text, _ := reader.ReadString('\n')
 			text = strings.TrimSpace(text)
 			id, _ := strconv.Atoi(text)
-			successful, err := pubsub.RequestLogin(nc, id)
-			if err != nil || successful{
+			if id <= 0 {
+				continue
+			}
+			alreadyLogged, err := pubsub.RequestLogin(nc, id)
+			if err != nil || alreadyLogged{
 				fmt.Println("Erro no login")
 			} else {
 				fmt.Println("Login bem-sucedido!")

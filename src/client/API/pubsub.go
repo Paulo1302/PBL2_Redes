@@ -13,7 +13,7 @@ import (
 
 
 func BrokerConnect(serverNumber int) *nats.Conn {
-	url := "nats://192.168.0.21:" + strconv.Itoa(serverNumber + 4222)
+	url := "nats://192.168.8.112:" + strconv.Itoa(serverNumber + 4222)
 	//fmt.Println(url)
 	nc,_ := nats.Connect(url)
 	
@@ -60,9 +60,7 @@ func RequestLogin(nc *nats.Conn, id int) (bool,error) {
 	json.Unmarshal(response.Data, &msg)
 	
 	if msg["err"] != nil {
-		err = errors.New(msg["err"].(string))
-	}else {
-		err = nil
+		return false, errors.New(msg["err"].(string))
 	}
 	
 	return msg["result"].(bool), err
@@ -297,10 +295,9 @@ func imAlive(nc *nats.Conn, id int64, ctx context.Context){
 
 func LoggedIn(nc *nats.Conn, id int) *nats.Subscription {
 	sub, _ := nc.Subscribe("topic.loggedIn", func(m *nats.Msg) {
-		var payload map[string]any
+		var payload map[string]int
 		json.Unmarshal(m.Data, &payload)
-		if int(payload["client_id"].(float64))!=id {
-			fmt.Println(int(payload["client_id"].(float64)))
+		if int(payload["client_id"])!=id {
 			return
 		}
 		nc.Publish(m.Reply, m.Data)
