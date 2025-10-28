@@ -100,7 +100,7 @@ func RequestOpenPack(nc *nats.Conn, id int) ([]int,error) {
 
 func RequestSeeCards(nc *nats.Conn, id int) ([]int,error) {
 	msg := map[string]any{
-			"client_ID": id,
+			"client_id": id,
 		}
 	data,_ := json.Marshal(msg)
 	response,err := nc.Request("topic.seeCards", data, time.Second)
@@ -115,12 +115,21 @@ func RequestSeeCards(nc *nats.Conn, id int) ([]int,error) {
 	json.Unmarshal(response.Data, &msg)
 	
 	if msg["err"] != nil {
-		err = errors.New(msg["err"].(string))
-	}else {
-		err = nil
+		return []int{}, errors.New(msg["err"].(string))
 	}
 
-	return msg["result"].([]int), err
+	if msg["result"] == nil{
+		return []int{}, nil
+	} 
+	resultSlice := msg["result"].([]any) 
+	
+    cards := make([]int, 0, len(resultSlice))
+	
+	for _, item := range resultSlice {
+        cards = append(cards, int(item.(float64)))
+    }
+
+	return cards, nil
 }
 
 

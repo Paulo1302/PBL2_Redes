@@ -30,6 +30,7 @@ func SetupPS(s *Store) {
 	CreateAccount(nc, s)
 	ClientLogin(nc, s)
 	ClientOpenPack(nc, s)
+	ClientSeeCards(nc, s)
 }
 
 // BrokerConnect conecta ao broker NATS com tratamento de erro robusto
@@ -262,6 +263,19 @@ func ClientOpenPack(nc *nats.Conn, s *Store) {
 		nc.Publish(m.Reply, data)
 	})
 }
+
+
+func ClientSeeCards(nc *nats.Conn, s *Store) {
+	nc.Subscribe("topic.seeCards", func(m *nats.Msg) {
+		fmt.Println("REQUEST SEECARDS")
+		var payload map[string]any
+		json.Unmarshal(m.Data, &payload)
+		payload["result"] = s.players[int(payload["client_id"].(float64))].Cards
+		data, _ := json.Marshal(payload)
+		nc.Publish(m.Reply, data)
+	})
+}
+
 
 // func getSmth() map[string]any {
 // 	resp, _ := http.Get("http://localhost:8080/status")
