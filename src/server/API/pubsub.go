@@ -163,7 +163,7 @@ func isLogged(id int) bool {
 	payload := map[string]int{
 		"client_id": id,
 	}
-	_, err := RequestMessage(myConnection, "topic.loggedIn", payload, 200*time.Millisecond)
+	_, err := RequestMessage(myConnection, "topic.loggedIn", payload, 150*time.Millisecond)
 
 	if err != nil {
 		return false
@@ -264,7 +264,6 @@ func ClientOpenPack(nc *nats.Conn, s *Store) {
 	})
 }
 
-
 func ClientSeeCards(nc *nats.Conn, s *Store) {
 	nc.Subscribe("topic.seeCards", func(m *nats.Msg) {
 		fmt.Println("REQUEST SEECARDS")
@@ -275,7 +274,6 @@ func ClientSeeCards(nc *nats.Conn, s *Store) {
 		nc.Publish(m.Reply, data)
 	})
 }
-
 
 // func getSmth() map[string]any {
 // 	resp, _ := http.Get("http://localhost:8080/status")

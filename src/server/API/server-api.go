@@ -2,7 +2,9 @@ package API
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -12,6 +14,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -453,42 +456,102 @@ func (s *Store) checkIfAnyNodeLogged(clientID int) bool {
 	maps.Copy(members, s.members)
 	s.mu.Unlock()
 
-	fmt.Println("COPIOU")
+	// fmt.Println("COPIOU") // Removido para não poluir o log
+
+	// respData pode ser definido aqui, pois é usado apenas localmente.
 	type respData struct {
 		Logged bool `json:"logged"`
 	}
-	for nodeID, addr := range members {
-		host, _, _ := net.SplitHostPort(string(addr))
-		url := fmt.Sprintf("http://%s/internal/is_logged", net.JoinHostPort(host, strconv.Itoa(8080)))
-		fmt.Println(url)
-		body, _ := json.Marshal(map[string]int{"client_id": clientID})
-		client := &http.Client{
-			Timeout: 600 * time.Millisecond, // ou 1 segundo se quiser garantir
-		}
-		resp, err := client.Post(url, "application/json", bytes.NewReader(body))
-		if err != nil {
-			fmt.Printf("[WARN] Falha ao consultar %s (%s): %v\n", nodeID, addr, err)
-			continue
-		}
-		defer resp.Body.Close()
 
-		var standard StandardResponse
-		if err := json.NewDecoder(resp.Body).Decode(&standard); err != nil {
-			fmt.Printf("[WARN] Resposta inválida de %s: %v\n", nodeID, err)
-			continue
-		}
-		var data respData
+	// 1. Contexto com cancelamento.
+	// Quando esta função retornar (seja com true ou false),
+	// o defer cancel() será chamado, cancelando todas as
+	// requisições HTTP que ainda estiverem em andamento.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
-		json.Unmarshal(standard.Payload, &data)
-		fmt.Println("Zorra 2:",data.Logged)
-		if data.Logged {
-			return true
-		}	
-		
+	var wg sync.WaitGroup
+	// Canal com buffer 1. Apenas a *primeira* goroutine a encontrar
+	// o resultado 'true' conseguirá escrever nele.
+	resultChan := make(chan bool, 1)
+
+	// Criamos um único cliente HTTP para ser reutilizado
+	client := &http.Client{
+		Timeout: 600 * time.Millisecond,
 	}
 
-	// Se nenhum retornou true
-	return false
+	wg.Add(len(members))
+	for nodeID, addr := range members {
+		// Criamos as variáveis aqui para que sejam capturadas
+		// corretamente pela goroutine (Evita o "Loop Variable Trap")
+		go func(nodeID string, addr raft.ServerAddress) {
+			defer wg.Done()
+
+			host, _, _ := net.SplitHostPort(string(addr))
+			url := fmt.Sprintf("http://%s/internal/is_logged", net.JoinHostPort(host, strconv.Itoa(8080)))
+			fmt.Println("Consultando:", url)
+
+			body, _ := json.Marshal(map[string]int{"client_id": clientID})
+
+			// 2. Criamos a requisição com o contexto
+			req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
+			if err != nil {
+				// Se o contexto já foi cancelado, nem tentamos
+				if !errors.Is(err, context.Canceled) {
+					fmt.Printf("[WARN] Falha ao criar requisição para %s: %v\n", nodeID, err)
+				}
+				return
+			}
+			req.Header.Set("Content-Type", "application/json")
+
+			resp, err := client.Do(req)
+			if err != nil {
+				// 3. Se o erro for de contexto cancelado, é esperado.
+				// Só logamos se for um erro "real" (ex: connection refused)
+				if !errors.Is(err, context.Canceled) {
+					fmt.Printf("[WARN] Falha ao consultar %s (%s): %v\n", nodeID, addr, err)
+				}
+				return
+			}
+			defer resp.Body.Close()
+
+			var standard StandardResponse
+			if err := json.NewDecoder(resp.Body).Decode(&standard); err != nil {
+				fmt.Printf("[WARN] Resposta inválida de %s: %v\n", nodeID, err)
+				return
+			}
+			var data respData
+			json.Unmarshal(standard.Payload, &data)
+			fmt.Println("Resultado de", nodeID, ":", data.Logged)
+
+			if data.Logged {
+				// 4. Envia 'true' para o canal.
+				// Graças ao select, se o canal já tiver recebido um 'true'
+				// (e estiver cheio), cairemos no 'default' e não bloquearemos.
+				select {
+				case resultChan <- true:
+					// Fomos os primeiros a relatar 'true'
+				default:
+					// Alguém já relatou 'true', apenas terminamos
+				}
+			}
+		}(nodeID, addr)
+	}
+
+	// 5. Lança uma goroutine para esperar todas as outras terminarem
+	// e então fechar o canal. Isso sinaliza que "todos terminaram".
+	go func() {
+		wg.Wait()
+		close(resultChan)
+	}()
+
+	// 6. Espera por um resultado.
+	// Se resultChan for fechado (wg.Wait() terminou), 'ok' será 'false'.
+	// Se recebermos 'true', 'ok' será 'true' e 'result' será 'true'.
+	result, ok := <-resultChan
+
+	// Retorna true apenas se ok=true E result=true
+	return ok && result
 }
 
 func (s *Store) handleInternalOpenPack(c *gin.Context) {
