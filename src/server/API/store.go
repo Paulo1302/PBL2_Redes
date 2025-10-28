@@ -28,6 +28,7 @@ type Store struct {
 	data     map[string]string             // Dados chave-valor replicados
 	members  map[string]raft.ServerAddress // Lista sincronizada de membros do cluster
 	players  map[int]Player
+	Cards    [][3]int
 	count    int 
 	RaftLog  *raft.Raft                    // Referência à instância Raft (preenchida pelo main)
 	NodeID   string                        // ID deste nó (preenchido pelo main)
@@ -41,6 +42,7 @@ func NewStore() *Store {
 		members: make(map[string]raft.ServerAddress),
 		players: make(map[int]Player),
 		count: 0,
+		Cards: setupPacks(900),
 	}
 }
 
@@ -79,10 +81,12 @@ func (s *Store) Apply(log *raft.Log) interface{} {
 		fmt.Printf("[FSM Apply] Removed member '%s'\n", c.MemberID) // Log de depuração
 		return nil // Sucesso
 	case "create_player":
+		s.count = c.Count // mantém o contador consistente
 		s.players[c.PlayerID] = Player{
 			Id:    c.PlayerID,
 			Cards: c.Cards,
 		}
+		fmt.Printf("[FSM Apply] Created player %d (count=%d)\n", c.PlayerID, s.count)
 		return nil
 	default:
 		// Retorna um erro se o comando for desconhecido

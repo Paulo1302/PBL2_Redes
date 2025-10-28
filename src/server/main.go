@@ -120,7 +120,7 @@ func setupRaft(id string, port int, advertiseAddr string, fsm *API.Store, bootst
 // monitorRaftPeers verifica periodicamente a saúde dos peers e remove os inativos.
 // A assinatura agora usa *API.Store
 func monitorRaftPeers(s *API.Store) {
-	ticker := time.NewTicker(30 * time.Second) // Check a cada 30 segundos
+	ticker := time.NewTicker(15 * time.Second) // Check a cada 30 segundos
 	defer ticker.Stop()
 
 	for range ticker.C {

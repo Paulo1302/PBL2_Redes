@@ -13,7 +13,7 @@ import (
 
 
 func BrokerConnect(serverNumber int) *nats.Conn {
-	url := "nats://192.168.8.112:" + strconv.Itoa(serverNumber + 4222)
+	url := "nats://192.168.0.21:" + strconv.Itoa(serverNumber + 4222)
 	//fmt.Println(url)
 	nc,_ := nats.Connect(url)
 	
@@ -69,7 +69,7 @@ func RequestLogin(nc *nats.Conn, id int) (bool,error) {
 
 func RequestOpenPack(nc *nats.Conn, id int) ([]int,error) {
 	msg := map[string]any{
-			"client_ID": id,
+			"client_id": id,
 		}
 	data,_ := json.Marshal(msg)
 	response,err := nc.Request("topic.openPack", data, time.Second)

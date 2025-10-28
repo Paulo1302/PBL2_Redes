@@ -36,7 +36,7 @@ func SetupPS(s *Store) {
 // BrokerConnect conecta ao broker NATS com tratamento de erro robusto
 // O parâmetro serverNumber se torna redundante, mas mantemos por compatibilidade
 func BrokerConnect(serverNumber int) (*nats.Conn, error) {
-	url := "nats://192.168.8.112:" + strconv.Itoa(serverNumber+4222)
+	url := "nats://192.168.0.21:" + strconv.Itoa(serverNumber+4222)
 
 	// Configuração com timeout e reconexão para robustez
 	opts := []nats.Option{
@@ -147,7 +147,6 @@ func CreateAccount(nc *nats.Conn, s *Store) {
 			nc.Publish(m.Reply, data)
 			return
 		}
-
 		// se for follower, redireciona pro líder
 		req := StandardRequest{
 			RequestID:     fmt.Sprintf("%d", time.Now().UnixNano()),
@@ -177,6 +176,7 @@ func isLogged(id int) bool {
 
 func ClientLogin(nc *nats.Conn, s *Store) {
 	nc.Subscribe("topic.login", func(msg *nats.Msg) {
+		fmt.Println(s.count)
 		var payload map[string]any
 		json.Unmarshal(msg.Data, &payload)
 		
@@ -222,6 +222,43 @@ func ClientLogin(nc *nats.Conn, s *Store) {
 		}
 		data, _ := json.Marshal(resp)
 		nc.Publish(msg.Reply, data)
+	})
+}
+
+func ClientOpenPack(nc *nats.Conn, s *Store) {
+	nc.Subscribe("topic.openPack", func(m *nats.Msg) {
+		fmt.Println("REQUEST OPENPACK")
+		if s.RaftLog.State() == raft.Leader {
+			fmt.Println("IM LEADER")
+			playerID, err := s.CreatePlayer()
+			fmt.Println("CREATED PLAYER")
+			if err != nil {
+				nc.Publish(m.Reply, []byte(`{"error":"RAFT_APPLY_ERROR"}`))
+				fmt.Println("SHIT")
+				return
+			}
+
+			payload := map[string]any{
+				"status":    "player created",
+				"player_id": playerID,
+				"node":      s.NodeID,
+				"is_leader": true,
+			}
+			fmt.Println("YEAH")
+			data, _ := json.Marshal(payload)
+			nc.Publish(m.Reply, data)
+			return
+		}
+
+		// se for follower, redireciona pro líder
+		req := StandardRequest{
+			RequestID:     fmt.Sprintf("%d", time.Now().UnixNano()),
+			OperationType: "create_player",
+			Payload:       nil,
+		}
+		resp := s.forwardToLeaderViaREST(req)
+		data, _ := json.Marshal(resp.Payload)
+		nc.Publish(m.Reply, data)
 	})
 }
 

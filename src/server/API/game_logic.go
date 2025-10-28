@@ -108,3 +108,27 @@ func (s *Store) CreatePlayer() (int, error) {
 
 	return newPlayer.Id, nil
 }
+
+// func (s *Store) OpenPack() (int, error) {
+// 	s.mu.Lock()
+	
+// 	s.count += 1
+// 	pack := s.Cards[1]
+// 	s.Cards = s.Cards[1:]
+// 	s.mu.Unlock()
+// 	fmt.Println("DEBUG1")
+// 	resp, err := s.applyLogInternal("open_pack", "", "", "", "", nil, 0, &pack)
+// 	fmt.Println("DEBUG2")
+// 	if err != nil {
+// 		return 0, err
+// 	}
+
+// 	// se applyLogInternal retornar o valor do FSM.Apply(), ótimo
+// 	if resp != nil {
+// 		if id, ok := resp.(int); ok {
+// 			return id, nil
+// 		}
+// 	}
+
+// 	return newPlayer.Id, nil
+// }
