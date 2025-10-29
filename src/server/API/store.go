@@ -21,6 +21,7 @@ type command struct {
 	PlayerID   int    `json:"player_id,omitempty"`
     PlayerCards      []int  `json:"player_cards,omitempty"`
 	Cards      [][3]int  `json:"cards,omitempty"`
+	GameQueue      []int  `json:"game_queue"`
 }
 
 // Store é a nossa FSM (Finite State Machine)
@@ -30,6 +31,7 @@ type Store struct {
 	data     map[string]string             // Dados chave-valor replicados
 	members  map[string]raft.ServerAddress // Lista sincronizada de membros do cluster
 	players  map[int]Player
+	gameQueue  []int
 	Cards    [][3]int
 	count    int 
 	RaftLog  *raft.Raft                    // Referência à instância Raft (preenchida pelo main)
@@ -97,6 +99,14 @@ func (s *Store) Apply(log *raft.Log) interface{} {
 		}
 		s.Cards = c.Cards
 		fmt.Println("[FSM Apply] Pack open", c.PlayerID, c.PlayerCards, "cards=", c.Cards)
+		return nil
+	case "join_game_queue":
+		s.gameQueue = append(s.gameQueue, c.PlayerID)
+		fmt.Println("[FSM Apply] join game queue", c.PlayerID, "queue=", s.gameQueue)
+		return nil
+	case "create_game":
+		s.gameQueue = c.GameQueue
+		fmt.Println("[FSM Apply] created game", "queue=", c.GameQueue)
 		return nil
 	default:
 		// Retorna um erro se o comando for desconhecido

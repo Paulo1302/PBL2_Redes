@@ -1,6 +1,7 @@
 package main
 
 import (
+	"slices"
 	"bufio"
 	"fmt"
 	"os"
@@ -13,15 +14,20 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
+var conn *nats.Conn
 
 func userMenu(nc *nats.Conn) {
+	id := 0
+	cardChan := make(chan int)
+	gameResult := make(chan string)
+	pubsub.ManageGame2(nc, &id, cardChan, gameResult)
 	reader := bufio.NewReader(os.Stdin)
 
 	for {
-		id := menuInicial(nc, reader)
+		id = menuInicial(nc, reader)
 		if id != 0 {
 			sub := pubsub.LoggedIn(nc, id)
-			menuPrincipal(nc, id, reader)
+			menuPrincipal(nc, id, reader, cardChan, gameResult)
 			sub.Unsubscribe()
 		}
 	}
@@ -74,7 +80,7 @@ func menuInicial(nc *nats.Conn, reader *bufio.Reader) int {
 	}
 }
 
-func menuPrincipal(nc *nats.Conn, id int, reader *bufio.Reader) {
+func menuPrincipal(nc *nats.Conn, id int, reader *bufio.Reader, card chan(int), roundResult chan(string)) {
 	var cards []int
 	var err error
 
@@ -123,7 +129,7 @@ func menuPrincipal(nc *nats.Conn, id int, reader *bufio.Reader) {
 				fmt.Println("Erro:", err)
 			} else {
 				cards, _ = pubsub.RequestSeeCards(nc, id)
-				menuJogo(nc, id, cards, reader)
+				menuJogo(nc, id, cards, reader, card, roundResult)
 			}
 		case "5":
 			return
@@ -133,30 +139,16 @@ func menuPrincipal(nc *nats.Conn, id int, reader *bufio.Reader) {
 	}
 }
 
-func menuJogo(nc *nats.Conn, id int, cards []int, reader *bufio.Reader) {
+func menuJogo(nc *nats.Conn, id int, cards []int, reader *bufio.Reader, cardChan chan(int), gameResult chan(string)) {
 	fmt.Println("Suas cartas:", cards)
-
-	cardChan := make(chan int)
-	gameResult := make(chan string)
-	ready := make(chan struct{})
-
-	go pubsub.ManageGame(nc, id, cardChan, ready, gameResult)
-
-	<-ready
-
+	s:=pubsub.ImAlive(conn, id)
 	for {
 		fmt.Print("Carta para jogar: ")
 		text, _ := reader.ReadString('\n')
 		text = strings.TrimSpace(text)
 		num, _ := strconv.Atoi(text)
 
-		valid := false
-		for _, c := range cards {
-			if c == num {
-				valid = true
-				break
-			}
-		}
+		valid := slices.Contains(cards, num)
 
 		if !valid {
 			fmt.Println("Carta inválida")
@@ -169,6 +161,7 @@ func menuJogo(nc *nats.Conn, id int, cards []int, reader *bufio.Reader) {
 
 	fmt.Println("O oponente jogou: ", <-cardChan)
 	fmt.Println("O resultado do jogo foi: ", <-gameResult)
+	s.Unsubscribe()
 }
 
 func main() {
@@ -176,6 +169,7 @@ func main() {
 	var htb = time.Now().UnixMilli()
 	
 	nc := pubsub.BrokerConnect(0)
+	conn = nc
 	defer nc.Close()
 
 	go pubsub.Heartbeat(nc, &htb)

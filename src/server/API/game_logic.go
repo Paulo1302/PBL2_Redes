@@ -85,7 +85,7 @@ func (s *Store) CreatePlayer() (int, error) {
 	}
 	s.mu.Unlock()
 	fmt.Println("DEBUG1")
-	resp, err := s.applyLogInternal("create_player", "", "", "", "", &newPlayer, s.count, nil)
+	resp, err := s.applyLogInternal("create_player", "", "", "", "", &newPlayer, s.count, nil, []int{})
 	fmt.Println("DEBUG2")
 	if err != nil {
 		return 0, err
@@ -118,7 +118,7 @@ func (s *Store) OpenPack(id int) (*[3]int, error) {
 	
 	s.mu.Unlock()
 	fmt.Println("DEBUG1")
-	resp, err := s.applyLogInternal("open_pack", "", "", "", "", &player, 0, &s.Cards)
+	resp, err := s.applyLogInternal("open_pack", "", "", "", "", &player, 0, &s.Cards, []int{})
 	fmt.Println("DEBUG2")
 	if err != nil {
 		return nil, err
@@ -132,4 +132,50 @@ func (s *Store) OpenPack(id int) (*[3]int, error) {
 	}
 
 	return &pack, nil
+}
+
+func (s *Store) JoinQueue(id int) (int, error) {
+	s.mu.Lock()
+	
+	player := Player{
+		Id: id,
+		Cards: nil,
+	}
+
+	s.mu.Unlock()
+	fmt.Println("DEBUG1")
+	resp, err := s.applyLogInternal("join_game_queue", "", "", "", "", &player, 0, nil, []int{})
+	fmt.Println("DEBUG2")
+	if err != nil {
+		return 0, err
+	}
+
+	// se applyLogInternal retornar o valor do FSM.Apply(), ótimo
+	if resp != nil {
+		if id, ok := resp.(int); ok {
+			return id, nil
+		}
+	}
+
+	return player.Id, nil
+}
+
+func (s *Store) CreateMatch() (int, int, error) {
+	s.mu.Lock()
+	
+	p1:=s.gameQueue[0]
+	p2:=s.gameQueue[0]
+
+	newQueue := s.gameQueue[2:]
+	s.mu.Unlock()
+	fmt.Println("DEBUG1")
+	_, err := s.applyLogInternal("create_game", "", "", "", "", nil, 0, nil, newQueue)
+	fmt.Println("DEBUG2")
+	if err != nil {
+		return 0, 0, err
+	}
+
+	// se applyLogInternal retornar o valor do FSM.Apply(), ótimo
+
+	return p1, p2, nil
 }

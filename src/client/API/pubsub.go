@@ -1,7 +1,6 @@
 package pubsub
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -133,7 +132,7 @@ func RequestSeeCards(nc *nats.Conn, id int) ([]int,error) {
 }
 
 
-func RequestFindMatch(nc *nats.Conn, id int) (int,error) {
+func RequestFindMatch(nc *nats.Conn, id int) (int, error) {
 
 	payload := make(map[string]any)
 
@@ -144,22 +143,22 @@ func RequestFindMatch(nc *nats.Conn, id int) (int,error) {
 	sub,_:=nc.Subscribe("topic.matchmaking", func(msg *nats.Msg) {
 
 		json.Unmarshal(msg.Data, &payload)
-		if payload["client_ID"].(int) != id{
+		if int(payload["client_id"].(float64)) != id{
 			return
 		}
 		if payload["err"] != nil{
 			*enemyId = 0
 			onQueue <- -1
 		}
-		
-		*enemyId = payload["enemy_ID"].(int)
+
 		nc.Publish(msg.Reply, msg.Data)
+		*enemyId = int(payload["enemy_id"].(float64))
 		onQueue <- 0
 	})
 	
 
 	msg := map[string]any{
-			"client_ID": id,
+			"client_id": id,
 		}
 	data,_ := json.Marshal(msg)
 	response,err := nc.Request("topic.findMatch", data, time.Second)
@@ -249,61 +248,86 @@ func SendCards(nc *nats.Conn, id int, card int){
 	nc.Publish("game.client", data)
 }
 
-func ManageGame(nc *nats.Conn, id int, card chan(int), ready chan(struct{}), roundResult chan(string)){
-	gameResult := make(chan(string))
-	ctx, cancel := context.WithCancel(context.Background())
+// func ManageGame(nc *nats.Conn, id int, card chan(int), ready chan(struct{}), roundResult chan(string)){
+// 	gameResult := make(chan(string))
+// 	ctx, cancel := context.WithCancel(context.Background())
 	
-	go imAlive(nc, int64(id), ctx)
+// 	go imAlive(nc, int64(id), ctx)
+
+// 	payload := make(map[string]any)
+
+// 	sub,_:=nc.Subscribe("game.server", func(msg *nats.Msg) {
+		
+// 		json.Unmarshal(msg.Data, &payload)
+		
+// 		if payload["err"] != nil {
+// 			card <- 0
+// 			gameResult <- "error" //erro, sai da fila
+// 			cancel()
+// 			return
+// 		}
+// 		if int(payload["client_id"].(float64)) != id {
+// 			return
+// 		}
+// 		if payload["result"].(string) == "win"{
+// 			card <- int(payload["card"].(float64))
+// 			gameResult <- "win" //vitoria
+// 			cancel()
+// 			return
+// 		}
+// 		if payload["result"].(string) == "lose"{
+// 			card <- int(payload["card"].(float64))
+// 			gameResult <- "lose" //derrota
+// 			cancel()
+// 		}
+// 	})
+// 	ready <- struct{}{}
+// 	roundResult <- <- gameResult
+// 	sub.Unsubscribe()
+// }
+
+func ManageGame2(nc *nats.Conn, id *int, card chan(int), roundResult chan(string)){
 
 	payload := make(map[string]any)
 
-	sub,_:=nc.Subscribe("game.server", func(msg *nats.Msg) {
-		
+	nc.Subscribe("game.server", func(msg *nats.Msg) {
 		json.Unmarshal(msg.Data, &payload)
-		
-		if payload["err"] != nil {
-			card <- 0
-			gameResult <- "error" //erro, sai da fila
-			cancel()
+		currId := *id
+		if currId == 0 {
 			return
 		}
-		if payload["client_ID"].(int) != id {
+		if payload["err"] != nil {
+			card <- 0
+			roundResult <- "error" //erro, sai da fila
+			return
+		}
+		if int(payload["client_id"].(float64)) != currId {
 			return
 		}
 		if payload["result"].(string) == "win"{
 			card <- payload["card"].(int)
-			gameResult <- "win" //vitoria
-			cancel()
+			roundResult <- "win" //vitoria
 			return
 		}
 		if payload["result"].(string) == "lose"{
 			card <- payload["card"].(int)
-			gameResult <- "lose" //derrota
-			cancel()
+			roundResult <- "lose" //derrota
 		}
 	})
-	ready <- struct{}{}
-	roundResult <- <- gameResult
-	sub.Unsubscribe()
 }
 
 
 
-func imAlive(nc *nats.Conn, id int64, ctx context.Context){
-	
-	for{
-		select {
-		case <-ctx.Done():
+func ImAlive(nc *nats.Conn, id int) *nats.Subscription{
+	sub, _ := nc.Subscribe("game.heartbeat", func(m *nats.Msg) {
+		var payload map[string]int
+		json.Unmarshal(m.Data, &payload)
+		if int(payload["client_id"])!=id {
 			return
-		default:
-			msg := map[string]int64{
-				"client_id" : id,
-				"client_ping": time.Now().UnixMilli(),
-			}
-			data,_ := json.Marshal(msg)
-			nc.Publish("game.heartbeat", data)	
-		}	
-	}
+		}
+		nc.Publish(m.Reply, m.Data)
+	})
+	return sub
 
 }
 

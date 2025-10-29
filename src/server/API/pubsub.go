@@ -131,7 +131,7 @@ func CreateAccount(nc *nats.Conn, s *Store) {
 			playerID, err := s.CreatePlayer()
 			fmt.Println("CREATED PLAYER")
 			if err != nil {
-				nc.Publish(m.Reply, []byte(`{"error":"RAFT_APPLY_ERROR"}`))
+				nc.Publish(m.Reply, []byte(`{"err":"RAFT_APPLY_ERROR"}`))
 				fmt.Println("SHIT")
 				return
 			}
@@ -171,6 +171,8 @@ func isLogged(id int) bool {
 		return true
 	}
 }
+
+
 
 func ClientLogin(nc *nats.Conn, s *Store) {
 	nc.Subscribe("topic.login", func(msg *nats.Msg) {
@@ -234,7 +236,7 @@ func ClientOpenPack(nc *nats.Conn, s *Store) {
 			cards, err := s.OpenPack(int(payload["client_id"].(float64)))
 			fmt.Println("Pack Open")
 			if err != nil {
-				nc.Publish(m.Reply, []byte(`{"error":"RAFT_APPLY_ERROR"}`))
+				nc.Publish(m.Reply, []byte(`{"err":"RAFT_APPLY_ERROR"}`))
 				fmt.Println("SHIT")
 				return
 			}
@@ -274,6 +276,99 @@ func ClientSeeCards(nc *nats.Conn, s *Store) {
 		nc.Publish(m.Reply, data)
 	})
 }
+
+func readyToPlay(id int, enemyId int) bool {
+	payload := map[string]int{
+		"client_id": id,
+		"enemy_id" : enemyId,
+	}
+	_, err := RequestMessage(myConnection, "topic.loggedIn", payload, 150*time.Millisecond)
+
+	if err != nil {
+		return false
+	} else {
+		return true
+	}
+}
+
+func ClientJoinGameQueue(nc *nats.Conn, s *Store) {
+	nc.Subscribe("topic.findMatch", func(m *nats.Msg) {
+		fmt.Println("REQUEST GAME QUEUE")
+		var payload map[string]any
+		json.Unmarshal(m.Data, &payload)
+
+		if s.RaftLog.State() == raft.Leader {
+			fmt.Println("IM LEADER")
+			_, err := s.JoinQueue(int(payload["client_id"].(float64)))
+			fmt.Println("Added to queue")
+			if err != nil {
+				nc.Publish(m.Reply, []byte(`{"err":"RAFT_APPLY_ERROR"}`))
+				fmt.Println("SHIT")
+				return
+			}
+			payload := map[string]any{
+				"status":    "Added to queue",
+				"err":       nil,
+				"node":      s.NodeID,
+				"is_leader": true,
+			}
+			fmt.Println("YEAH")
+			data, _ := json.Marshal(payload)
+			nc.Publish(m.Reply, data)
+		}else {
+			req := StandardRequest{
+				RequestID:     fmt.Sprintf("%d", time.Now().UnixNano()),
+				OperationType: "join_game_queue",
+				Payload:       m.Data,
+			}
+			resp := s.forwardToLeaderViaREST(req)
+			data, _ := json.Marshal(resp.Payload)
+			nc.Publish(m.Reply, data)
+		}
+
+		if len(s.gameQueue)==2{
+			var v1, v2 bool
+			var p1, p2 int
+			if s.RaftLog.State() == raft.Leader {
+				p1, p2, _ = s.CreateMatch()
+				fmt.Println("IM LEADER")
+				v1 = s.checkMatchmaking(p1, p2)
+				v2 = s.checkMatchmaking(p2, p1)
+				fmt.Println("checked both players")
+			}else {
+				
+				req1 := StandardRequest{
+					RequestID:     fmt.Sprintf("%d", time.Now().UnixNano()),
+					OperationType: "matchmaking",
+					Payload:       nil,
+				}
+				resp := s.forwardToLeaderViaREST(req1)
+				
+				var payload1 map[string]any
+				json.Unmarshal(resp.Payload, &payload1)
+				v1 = payload1["ready1"].(bool)
+				v2 = payload1["ready2"].(bool)
+				p1 = int(payload1["p1"].(float64))
+				p2 = int(payload1["p2"].(float64))
+			}
+			time.Sleep(500 * time.Millisecond)
+			if v1 && v2 {
+				//DO SMTH
+				return
+			}
+			
+			if v1 {
+				PublishMessage(nc, "game.server", map[string]any{"result" : "win", "card" : 0, "client_id" : p1})
+			}
+			if v2 {
+				PublishMessage(nc, "game.server", map[string]any{"result" : "win", "card" : 0, "client_id" : p2})
+			}
+		}
+
+	})
+}
+
+
 
 // func getSmth() map[string]any {
 // 	resp, _ := http.Get("http://localhost:8080/status")
