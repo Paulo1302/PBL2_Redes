@@ -82,7 +82,7 @@ func NewSuccessResponse(reqID, responderID string, payload interface{}) Standard
 
 // applyLogInternal (Inalterada - continua necessária para o Líder processar)
 // Assume que 'command' está definido em store.go
-func (s *Store) applyLogInternal(op string, key string, value string, memberID string, memberAddr string, player *Player, idCount int, cards *[][3]int, gameQueue []int, gameId *matchStruct) (any, error) {
+func (s *Store) applyLogInternal(op string, key string, value string, memberID string, memberAddr string, player *Player, idCount int, cards *[][3]int, gameQueue []int, gameId matchStruct) (any, error) {
 	fmt.Println("APPLY INTERNAL")
 	if s.RaftLog.State() != raft.Leader {
 		return nil, fmt.Errorf("node is not the leader")
@@ -103,9 +103,10 @@ func (s *Store) applyLogInternal(op string, key string, value string, memberID s
 		cmd.Cards = *cards
 	}
 	cmd.GameQueue = gameQueue
-	if gameId!=nil {
-		cmd.GameId = *gameId	
-	}
+	
+	cmd.GameId = gameId	
+	fmt.Println(cmd.GameId)
+
 
 	b, err := json.Marshal(cmd)
 	if err != nil {
@@ -263,7 +264,7 @@ func (s *Store) joinHandler(c *gin.Context) {
 	}
 	log.Printf("[API Join] Raft AddVoter successful for Node '%s'\n", req.ID)
 
-	_, err := s.applyLogInternal("add_member", "", "", req.ID, req.Address, nil, 0, nil, []int{}, nil)
+	_, err := s.applyLogInternal("add_member", "", "", req.ID, req.Address, nil, 0, nil, []int{}, matchStruct{})
 	if err != nil {
 		log.Printf("[API Join] Error applying 'add_member' to FSM for Node '%s': %v (Raft AddVoter succeeded)\n", req.ID, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to apply member addition to FSM: %v", err)})
@@ -304,7 +305,7 @@ func (s *Store) leaveHandler(c *gin.Context) {
 	}
 	log.Printf("[API Leave] Raft RemoveServer successful for Node '%s'\n", req.ID)
 
-	_, err := s.applyLogInternal("remove_member", "", "", req.ID, "", nil, 0, nil,[]int{}, nil)
+	_, err := s.applyLogInternal("remove_member", "", "", req.ID, "", nil, 0, nil,[]int{}, matchStruct{})
 	if err != nil {
 		log.Printf("[API Leave] Error applying 'remove_member' to FSM for Node '%s': %v (Raft RemoveServer succeeded)\n", req.ID, err)
 		// Continua
@@ -348,7 +349,7 @@ func (s *Store) setHandler(c *gin.Context) {
 	}
 	key := c.Param("key")
 
-	_, err := s.applyLogInternal("set", key, req.Value, "", "", nil, 0, nil,[]int{}, nil)
+	_, err := s.applyLogInternal("set", key, req.Value, "", "", nil, 0, nil,[]int{}, matchStruct{})
 	if err != nil {
 		if err.Error() == "node is not the leader" {
 			leaderAddr := string(s.RaftLog.Leader())
@@ -630,14 +631,14 @@ func (s *Store) handleMatchmaking(c *gin.Context) {
 		return
 	}
 	x, _ := s.CreateMatch()
-	ready1 := s.checkMatchmaking(x.p1, x)
-	ready2 := s.checkMatchmaking(x.p2, x)
+	ready1 := s.checkMatchmaking(x.P1, x)
+	ready2 := s.checkMatchmaking(x.P2, x)
 
 	c.JSON(http.StatusOK, NewSuccessResponse("none", s.NodeID, gin.H{
 		"ready1": ready1,
 		"ready2": ready2,
-		"p1" : x.p1,
-		"p2" : x.p2,
+		"p1" : x.P1,
+		"p2" : x.P2,
 	}))
 }
 
@@ -755,6 +756,206 @@ func (s *Store) checkMatchmaking(clientID int, game matchStruct) bool {
 	// Retorna true apenas se ok=true E result=true
 	return ok && result
 }
+
+func (s *Store) handleInternalPlayCards(c *gin.Context) {
+	var req StandardRequest
+	if err := c.BindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, NewErrorResponse("none", s.NodeID, "INVALID_JSON", err.Error()))
+		return
+	}
+
+	var play struct {
+		ClientID int `json:"client_id"`
+		Card int `json:"card"`
+		GameID string `json:"game"`
+	}
+	if err := json.Unmarshal(req.Payload, &play); err != nil {
+		c.JSON(http.StatusBadRequest, NewErrorResponse(req.RequestID, s.NodeID, "INVALID_PLAYER", err.Error()))
+		return
+	}
+	fmt.Println(play)
+	if s.RaftLog.State() != raft.Leader {
+		resp := s.forwardToLeaderViaREST(req)
+		c.JSON(http.StatusOK, resp)
+		return
+	}
+
+
+	err := s.PlayCard(play.GameID, play.ClientID, play.Card)
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, NewErrorResponse(req.RequestID, s.NodeID, "RAFT_APPLY_ERROR", err.Error()))
+		return
+	}
+
+	c.JSON(http.StatusOK, NewSuccessResponse(req.RequestID, s.NodeID, gin.H{"status": "card played"}))
+}
+
+func (s *Store) handleSendGameResult(c *gin.Context) {
+	var req StandardRequest
+
+	if err := c.BindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, NewErrorResponse("none", s.NodeID, "INVALID_JSON", err.Error()))
+		return
+	}
+
+	var play struct {
+		ClientID int `json:"client_id"`
+		Card int `json:"card"`
+		GameID string `json:"game"`
+	}
+	if err := json.Unmarshal(req.Payload, &play); err != nil {
+		c.JSON(http.StatusBadRequest, NewErrorResponse(req.RequestID, s.NodeID, "INVALID_PLAYER", err.Error()))
+		return
+	}
+
+	temp:=s.matchHistory[play.GameID]
+	var response1, response2 map[string]any
+	if temp.Card1>temp.Card2 {
+		response1 = map[string]any{
+			"client_id" : temp.P1,
+			"result"	: "win",
+			"card"		: temp.Card2,
+		}
+		response2 = map[string]any{
+			"client_id" : temp.P2,
+			"result"	: "lose",
+			"card"		: temp.Card1,
+		}
+	}else {
+		response1 = map[string]any{
+			"client_id" : temp.P1,
+			"result"	: "lose",
+			"card"		: temp.Card2,
+		}
+		response2 = map[string]any{
+			"client_id" : temp.P2,
+			"result"	: "win",
+			"card"		: temp.Card1,
+		}
+	}
+	s.checkGame(response1)
+	s.checkGame(response2)
+
+	c.JSON(http.StatusOK, NewSuccessResponse("none", s.NodeID, gin.H{
+		"done": false,
+	}))
+}
+
+func (s *Store) handleInternalCheckGame(c *gin.Context) {
+	var req map[string]any
+	if err := c.BindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, NewErrorResponse("none", s.NodeID, "INVALID_JSON", err.Error()))
+		return
+	}
+
+	SendingGameResult(req)
+	fmt.Println("algooo")
+	c.JSON(http.StatusOK, NewSuccessResponse("none", s.NodeID, gin.H{
+		"ready":false,
+	}))
+}
+
+func (s *Store) checkGame(response map[string]any) bool {
+	s.mu.Lock()
+	members := make(map[string]raft.ServerAddress)
+	maps.Copy(members, s.members)
+	s.mu.Unlock()
+
+	type respData struct {
+		Ready bool `json:"ready"`
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var wg sync.WaitGroup
+	// Canal com buffer 1. Apenas a *primeira* goroutine a encontrar
+	// o resultado 'true' conseguirá escrever nele.
+	resultChan := make(chan bool, 1)
+
+	// Criamos um único cliente HTTP para ser reutilizado
+	client := &http.Client{
+		Timeout: 600 * time.Millisecond,
+	}
+
+	wg.Add(len(members))
+	for nodeID, addr := range members {
+		// Criamos as variáveis aqui para que sejam capturadas
+		// corretamente pela goroutine (Evita o "Loop Variable Trap")
+		go func(nodeID string, addr raft.ServerAddress) {
+			defer wg.Done()
+
+			host, _, _ := net.SplitHostPort(string(addr))
+			url := fmt.Sprintf("http://%s/internal/check_game", net.JoinHostPort(host, strconv.Itoa(8080)))
+			fmt.Println("Consultando:", url)
+
+			body, _ := json.Marshal(response)
+
+			// 2. Criamos a requisição com o contexto
+			req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
+			if err != nil {
+				// Se o contexto já foi cancelado, nem tentamos
+				if !errors.Is(err, context.Canceled) {
+					fmt.Printf("[WARN] Falha ao criar requisição para %s: %v\n", nodeID, err)
+				}
+				return
+			}
+			req.Header.Set("Content-Type", "application/json")
+
+			resp, err := client.Do(req)
+			if err != nil {
+				// 3. Se o erro for de contexto cancelado, é esperado.
+				// Só logamos se for um erro "real" (ex: connection refused)
+				if !errors.Is(err, context.Canceled) {
+					fmt.Printf("[WARN] Falha ao consultar %s (%s): %v\n", nodeID, addr, err)
+				}
+				return
+			}
+			defer resp.Body.Close()
+
+			var standard StandardResponse
+			if err := json.NewDecoder(resp.Body).Decode(&standard); err != nil {
+				fmt.Printf("[WARN] Resposta inválida de %s: %v\n", nodeID, err)
+				return
+			}
+			var data respData
+			json.Unmarshal(standard.Payload, &data)
+			fmt.Println("Resultado de", nodeID, ":", data.Ready)
+
+			if data.Ready {
+				// 4. Envia 'true' para o canal.
+				// Graças ao select, se o canal já tiver recebido um 'true'
+				// (e estiver cheio), cairemos no 'default' e não bloquearemos.
+				select {
+				case resultChan <- true:
+					// Fomos os primeiros a relatar 'true'
+				default:
+					// Alguém já relatou 'true', apenas terminamos
+				}
+			}
+		}(nodeID, addr)
+	}
+
+	// 5. Lança uma goroutine para esperar todas as outras terminarem
+	// e então fechar o canal. Isso sinaliza que "todos terminaram".
+	go func() {
+		wg.Wait()
+		close(resultChan)
+	}()
+
+	// 6. Espera por um resultado.
+	// Se resultChan for fechado (wg.Wait() terminou), 'ok' será 'false'.
+	// Se recebermos 'true', 'ok' será 'true' e 'result' será 'true'.
+	result, ok := <-resultChan
+
+	// Retorna true apenas se ok=true E result=true
+	return ok && result
+}
+
+
+
+
 
 
 
@@ -933,6 +1134,9 @@ func SetupRouter(s *Store) *gin.Engine {
 		internalGroup.POST("/join_game_queue", s.handleInternalJoinGameQueue)
 		internalGroup.POST("/ready_matchmaking", s.handleInternalReadyMatchmaking)
 		internalGroup.POST("/matchmaking", s.handleMatchmaking)
+		internalGroup.POST("/play_cards", s.handleInternalPlayCards)
+		internalGroup.POST("/check_game", s.handleInternalCheckGame)
+		internalGroup.POST("/send_game_result", s.handleSendGameResult)
 		// Adicionar outros endpoints internos aqui (ex: POST /internal/openPack usando StandardRequest/StandardResponse)
 		// internalGroup.POST("/openpack", s.handleInternalOpenPack) // Exemplo
 	}

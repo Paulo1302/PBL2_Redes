@@ -124,15 +124,15 @@ func menuPrincipal(nc *nats.Conn, id int, reader *bufio.Reader, card chan(int), 
 			}
 		case "4":
 			fmt.Println("Buscando partida...")
+			cards, _ = pubsub.RequestSeeCards(nc, id)
+			if len(cards)==0 {
+				fmt.Println("não tem cartas")
+				continue
+			}
 			game, err := pubsub.RequestFindMatch(nc, id)
 			if err != nil {
 				fmt.Println("Erro:", err)
 			} else {
-				cards, _ = pubsub.RequestSeeCards(nc, id)
-				if len(cards)==0 {
-					fmt.Println("não tem cartas")
-					continue
-				}
 				menuJogo(nc, id, cards, reader, card, roundResult, game)
 			}
 		case "5":

@@ -11,7 +11,7 @@ import (
 )
 
 type matchStruct struct {
-    SelfId string `json:"selfId"`
+    SelfId string `json:"self_id"`
     P1     int    `json:"p1"`
     P2     int    `json:"p2"`
     Card1  int    `json:"card1"`
@@ -27,7 +27,7 @@ type NatsMessage struct {
 
 
 func BrokerConnect(serverNumber int) *nats.Conn {
-	url := "nats://192.168.0.21:" + strconv.Itoa(serverNumber+4223)
+	url := "nats://10.200.54.149:" + strconv.Itoa(serverNumber+4222)
 	//fmt.Println(url)
 	nc, _ := nats.Connect(url)
 
@@ -149,7 +149,6 @@ func RequestFindMatch(nc *nats.Conn, id int) (string, error) {
 	onQueue := make(chan (int))
 
 	sub, _ := nc.Subscribe("topic.matchmaking", func(msg *nats.Msg) {
-		fmt.Println("OII")
 		var natsPayload NatsMessage
 		json.Unmarshal(msg.Data, &natsPayload)
 		if natsPayload.ClientID != id {
@@ -314,12 +313,12 @@ func ManageGame2(nc *nats.Conn, id *int, card chan (int), roundResult chan (stri
 			return
 		}
 		if payload["result"].(string) == "win" {
-			card <- payload["card"].(int)
+			card <- int(payload["card"].(float64))
 			roundResult <- "win" //vitoria
 			return
 		}
 		if payload["result"].(string) == "lose" {
-			card <- payload["card"].(int)
+			card <- int(payload["card"].(float64))
 			roundResult <- "lose" //derrota
 		}
 	})

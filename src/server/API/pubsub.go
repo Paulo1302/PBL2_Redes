@@ -32,12 +32,13 @@ func SetupPS(s *Store) {
 	ClientOpenPack(nc, s)
 	ClientSeeCards(nc, s)
 	ClientJoinGameQueue(nc, s)
+	ClientPlayCardds(nc, s)
 }
 
 // BrokerConnect conecta ao broker NATS com tratamento de erro robusto
 // O parâmetro serverNumber se torna redundante, mas mantemos por compatibilidade
 func BrokerConnect(serverNumber int) (*nats.Conn, error) {
-	url := "nats://192.168.0.21:" + strconv.Itoa(serverNumber+4223)
+	url := "nats://10.200.54.149:" + strconv.Itoa(serverNumber+4222)
 
 	// Configuração com timeout e reconexão para robustez
 	opts := []nats.Option{
@@ -281,6 +282,7 @@ func readyToPlay(id int, enemyId matchStruct) bool {
 		"client_id": id,
 		"match":     enemyId,
 	}
+	fmt.Println(payload)
 	_, err := RequestMessage(myConnection, "topic.matchmaking", payload, 150*time.Millisecond)
 
 	if err != nil {
@@ -333,11 +335,9 @@ func ClientJoinGameQueue(nc *nats.Conn, s *Store) {
 			if s.RaftLog.State() == raft.Leader {
 				x, _ := s.CreateMatch()
 				fmt.Println("IM LEADER")
-				p1 = x.p1
-				p2 = x.p2
+				p1 = x.P1
+				p2 = x.P2
 				fmt.Println("CHECKING PLAYERS: ", s.checkMatchmaking(p1, x), s.checkMatchmaking(p2, x))
-				s.checkMatchmaking(p1, x)
-				s.checkMatchmaking(p2, x)
 				fmt.Println("checked both players")
 			} else {
 
@@ -352,6 +352,73 @@ func ClientJoinGameQueue(nc *nats.Conn, s *Store) {
 
 		}
 
+	})
+}
+
+
+func SendingGameResult(response map[string]any) {
+	
+	PublishMessage(myConnection, "game.server", response)
+
+}
+
+func ClientPlayCardds(nc *nats.Conn, s *Store) {
+	nc.Subscribe("game.client", func(m *nats.Msg) {
+		fmt.Println("REQUEST PLAY CARDS")
+		var payload map[string]any
+		json.Unmarshal(m.Data, &payload)
+		if s.RaftLog.State() == raft.Leader {
+			s.PlayCard(payload["game"].(string),int(payload["client_id"].(float64)),int(payload["card"].(float64)))
+		}else {
+			req1 := StandardRequest{
+				RequestID:     fmt.Sprintf("%d", time.Now().UnixNano()),
+				OperationType: "play_cards",
+				Payload:       m.Data,
+			}
+			s.forwardToLeaderViaREST(req1)
+		}
+		time.Sleep(500 * time.Millisecond)
+		temp:=s.matchHistory[payload["game"].(string)]
+		if temp.Card1 != 0 && temp.Card2 != 0{
+			if s.RaftLog.State() == raft.Leader {
+				var response1, response2 map[string]any
+				if temp.Card1>temp.Card2 {
+					response1 = map[string]any{
+						"client_id" : temp.P1,
+						"result"	: "win",
+						"card"		: temp.Card2,
+					}
+					response2 = map[string]any{
+						"client_id" : temp.P2,
+						"result"	: "lose",
+						"card"		: temp.Card1,
+					}
+				}else {
+					response1 = map[string]any{
+						"client_id" : temp.P1,
+						"result"	: "lose",
+						"card"		: temp.Card2,
+					}
+					response2 = map[string]any{
+						"client_id" : temp.P2,
+						"result"	: "win",
+						"card"		: temp.Card1,
+					}
+				}
+				s.checkGame(response1)
+				s.checkGame(response2)
+				return
+			}
+
+			req1 := StandardRequest{
+				RequestID:     fmt.Sprintf("%d", time.Now().UnixNano()),
+				OperationType: "send_game_result",
+				Payload:       m.Data,
+			}
+			s.forwardToLeaderViaREST(req1)
+
+		}
+		
 	})
 }
 
