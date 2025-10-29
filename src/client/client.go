@@ -124,12 +124,16 @@ func menuPrincipal(nc *nats.Conn, id int, reader *bufio.Reader, card chan(int), 
 			}
 		case "4":
 			fmt.Println("Buscando partida...")
-			_, err := pubsub.RequestFindMatch(nc, id)
+			game, err := pubsub.RequestFindMatch(nc, id)
 			if err != nil {
 				fmt.Println("Erro:", err)
 			} else {
 				cards, _ = pubsub.RequestSeeCards(nc, id)
-				menuJogo(nc, id, cards, reader, card, roundResult)
+				if len(cards)==0 {
+					fmt.Println("não tem cartas")
+					continue
+				}
+				menuJogo(nc, id, cards, reader, card, roundResult, game)
 			}
 		case "5":
 			return
@@ -139,7 +143,7 @@ func menuPrincipal(nc *nats.Conn, id int, reader *bufio.Reader, card chan(int), 
 	}
 }
 
-func menuJogo(nc *nats.Conn, id int, cards []int, reader *bufio.Reader, cardChan chan(int), gameResult chan(string)) {
+func menuJogo(nc *nats.Conn, id int, cards []int, reader *bufio.Reader, cardChan chan(int), gameResult chan(string), game string) {
 	fmt.Println("Suas cartas:", cards)
 	s:=pubsub.ImAlive(conn, id)
 	for {
@@ -155,7 +159,7 @@ func menuJogo(nc *nats.Conn, id int, cards []int, reader *bufio.Reader, cardChan
 			continue
 		}
 
-		pubsub.SendCards(nc, id, num)
+		pubsub.SendCards(nc, id, num, game)
 		break
 	}
 

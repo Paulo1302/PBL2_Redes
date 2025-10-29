@@ -82,7 +82,7 @@ func NewSuccessResponse(reqID, responderID string, payload interface{}) Standard
 
 // applyLogInternal (Inalterada - continua necessária para o Líder processar)
 // Assume que 'command' está definido em store.go
-func (s *Store) applyLogInternal(op string, key string, value string, memberID string, memberAddr string, player *Player, idCount int, cards *[][3]int, gameQueue []int) (any, error) {
+func (s *Store) applyLogInternal(op string, key string, value string, memberID string, memberAddr string, player *Player, idCount int, cards *[][3]int, gameQueue []int, gameId *matchStruct) (any, error) {
 	fmt.Println("APPLY INTERNAL")
 	if s.RaftLog.State() != raft.Leader {
 		return nil, fmt.Errorf("node is not the leader")
@@ -103,6 +103,9 @@ func (s *Store) applyLogInternal(op string, key string, value string, memberID s
 		cmd.Cards = *cards
 	}
 	cmd.GameQueue = gameQueue
+	if gameId!=nil {
+		cmd.GameId = *gameId	
+	}
 
 	b, err := json.Marshal(cmd)
 	if err != nil {
@@ -260,7 +263,7 @@ func (s *Store) joinHandler(c *gin.Context) {
 	}
 	log.Printf("[API Join] Raft AddVoter successful for Node '%s'\n", req.ID)
 
-	_, err := s.applyLogInternal("add_member", "", "", req.ID, req.Address, nil, 0, nil, []int{})
+	_, err := s.applyLogInternal("add_member", "", "", req.ID, req.Address, nil, 0, nil, []int{}, nil)
 	if err != nil {
 		log.Printf("[API Join] Error applying 'add_member' to FSM for Node '%s': %v (Raft AddVoter succeeded)\n", req.ID, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to apply member addition to FSM: %v", err)})
@@ -301,7 +304,7 @@ func (s *Store) leaveHandler(c *gin.Context) {
 	}
 	log.Printf("[API Leave] Raft RemoveServer successful for Node '%s'\n", req.ID)
 
-	_, err := s.applyLogInternal("remove_member", "", "", req.ID, "", nil, 0, nil,[]int{})
+	_, err := s.applyLogInternal("remove_member", "", "", req.ID, "", nil, 0, nil,[]int{}, nil)
 	if err != nil {
 		log.Printf("[API Leave] Error applying 'remove_member' to FSM for Node '%s': %v (Raft RemoveServer succeeded)\n", req.ID, err)
 		// Continua
@@ -345,7 +348,7 @@ func (s *Store) setHandler(c *gin.Context) {
 	}
 	key := c.Param("key")
 
-	_, err := s.applyLogInternal("set", key, req.Value, "", "", nil, 0, nil,[]int{})
+	_, err := s.applyLogInternal("set", key, req.Value, "", "", nil, 0, nil,[]int{}, nil)
 	if err != nil {
 		if err.Error() == "node is not the leader" {
 			leaderAddr := string(s.RaftLog.Leader())
@@ -626,29 +629,29 @@ func (s *Store) handleMatchmaking(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, NewErrorResponse("none", s.NodeID, "INVALID_JSON", err.Error()))
 		return
 	}
-	p1, p2, _ := s.CreateMatch()
-	ready1 := s.checkMatchmaking(p1, p2)
-	ready2 := s.checkMatchmaking(p2, p1)
+	x, _ := s.CreateMatch()
+	ready1 := s.checkMatchmaking(x.p1, x)
+	ready2 := s.checkMatchmaking(x.p2, x)
 
 	c.JSON(http.StatusOK, NewSuccessResponse("none", s.NodeID, gin.H{
 		"ready1": ready1,
 		"ready2": ready2,
-		"p1" : p1,
-		"p2" : p2,
+		"p1" : x.p1,
+		"p2" : x.p2,
 	}))
 }
 
 func (s *Store) handleInternalReadyMatchmaking(c *gin.Context) {
 	var req struct {
 		ClientID int `json:"client_id"`
-		EnemyID int `json:"enemy_id"`
+		Match matchStruct `json:"match"`
 	}
 	if err := c.BindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, NewErrorResponse("none", s.NodeID, "INVALID_JSON", err.Error()))
 		return
 	}
 
-	ready := readyToPlay(req.ClientID, req.EnemyID) //GET THIS
+	ready := readyToPlay(req.ClientID, req.Match) //GET THIS
 	fmt.Println("algooo")
 	c.JSON(http.StatusOK, NewSuccessResponse("none", s.NodeID, gin.H{
 		"ready": ready,
@@ -656,7 +659,7 @@ func (s *Store) handleInternalReadyMatchmaking(c *gin.Context) {
 }
 
 
-func (s *Store) checkMatchmaking(clientID int, enemyID int) bool {
+func (s *Store) checkMatchmaking(clientID int, game matchStruct) bool {
 	s.mu.Lock()
 	members := make(map[string]raft.ServerAddress)
 	maps.Copy(members, s.members)
@@ -690,7 +693,7 @@ func (s *Store) checkMatchmaking(clientID int, enemyID int) bool {
 			url := fmt.Sprintf("http://%s/internal/ready_matchmaking", net.JoinHostPort(host, strconv.Itoa(8080)))
 			fmt.Println("Consultando:", url)
 
-			body, _ := json.Marshal(map[string]int{"client_id": clientID,"enemy_id": enemyID})
+			body, _ := json.Marshal(map[string]any{"client_id": clientID,"match": game})
 
 			// 2. Criamos a requisição com o contexto
 			req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))

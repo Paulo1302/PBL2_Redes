@@ -31,12 +31,13 @@ func SetupPS(s *Store) {
 	ClientLogin(nc, s)
 	ClientOpenPack(nc, s)
 	ClientSeeCards(nc, s)
+	ClientJoinGameQueue(nc, s)
 }
 
 // BrokerConnect conecta ao broker NATS com tratamento de erro robusto
 // O parâmetro serverNumber se torna redundante, mas mantemos por compatibilidade
 func BrokerConnect(serverNumber int) (*nats.Conn, error) {
-	url := "nats://192.168.0.21:" + strconv.Itoa(serverNumber+4222)
+	url := "nats://192.168.0.21:" + strconv.Itoa(serverNumber+4223)
 
 	// Configuração com timeout e reconexão para robustez
 	opts := []nats.Option{
@@ -172,8 +173,6 @@ func isLogged(id int) bool {
 	}
 }
 
-
-
 func ClientLogin(nc *nats.Conn, s *Store) {
 	nc.Subscribe("topic.login", func(msg *nats.Msg) {
 		fmt.Println(s.count)
@@ -277,12 +276,12 @@ func ClientSeeCards(nc *nats.Conn, s *Store) {
 	})
 }
 
-func readyToPlay(id int, enemyId int) bool {
-	payload := map[string]int{
+func readyToPlay(id int, enemyId matchStruct) bool {
+	payload := map[string]any{
 		"client_id": id,
-		"enemy_id" : enemyId,
+		"match":     enemyId,
 	}
-	_, err := RequestMessage(myConnection, "topic.loggedIn", payload, 150*time.Millisecond)
+	_, err := RequestMessage(myConnection, "topic.matchmaking", payload, 150*time.Millisecond)
 
 	if err != nil {
 		return false
@@ -315,7 +314,7 @@ func ClientJoinGameQueue(nc *nats.Conn, s *Store) {
 			fmt.Println("YEAH")
 			data, _ := json.Marshal(payload)
 			nc.Publish(m.Reply, data)
-		}else {
+		} else {
 			req := StandardRequest{
 				RequestID:     fmt.Sprintf("%d", time.Now().UnixNano()),
 				OperationType: "join_game_queue",
@@ -325,50 +324,36 @@ func ClientJoinGameQueue(nc *nats.Conn, s *Store) {
 			data, _ := json.Marshal(resp.Payload)
 			nc.Publish(m.Reply, data)
 		}
+		time.Sleep(100 * time.Millisecond)
+		fmt.Println("JOINED Q1", len(s.gameQueue))
+		if len(s.gameQueue) == 2 {
+			fmt.Println("JOINED Q2")
 
-		if len(s.gameQueue)==2{
-			var v1, v2 bool
 			var p1, p2 int
 			if s.RaftLog.State() == raft.Leader {
-				p1, p2, _ = s.CreateMatch()
+				x, _ := s.CreateMatch()
 				fmt.Println("IM LEADER")
-				v1 = s.checkMatchmaking(p1, p2)
-				v2 = s.checkMatchmaking(p2, p1)
+				p1 = x.p1
+				p2 = x.p2
+				fmt.Println("CHECKING PLAYERS: ", s.checkMatchmaking(p1, x), s.checkMatchmaking(p2, x))
+				s.checkMatchmaking(p1, x)
+				s.checkMatchmaking(p2, x)
 				fmt.Println("checked both players")
-			}else {
-				
+			} else {
+
 				req1 := StandardRequest{
 					RequestID:     fmt.Sprintf("%d", time.Now().UnixNano()),
 					OperationType: "matchmaking",
 					Payload:       nil,
 				}
-				resp := s.forwardToLeaderViaREST(req1)
-				
-				var payload1 map[string]any
-				json.Unmarshal(resp.Payload, &payload1)
-				v1 = payload1["ready1"].(bool)
-				v2 = payload1["ready2"].(bool)
-				p1 = int(payload1["p1"].(float64))
-				p2 = int(payload1["p2"].(float64))
+				s.forwardToLeaderViaREST(req1)
 			}
 			time.Sleep(500 * time.Millisecond)
-			if v1 && v2 {
-				//DO SMTH
-				return
-			}
-			
-			if v1 {
-				PublishMessage(nc, "game.server", map[string]any{"result" : "win", "card" : 0, "client_id" : p1})
-			}
-			if v2 {
-				PublishMessage(nc, "game.server", map[string]any{"result" : "win", "card" : 0, "client_id" : p2})
-			}
+
 		}
 
 	})
 }
-
-
 
 // func getSmth() map[string]any {
 // 	resp, _ := http.Get("http://localhost:8080/status")

@@ -1,10 +1,10 @@
 package API
 
 import (
-	"maps"
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"sync"
 
 	"github.com/hashicorp/raft"
@@ -18,6 +18,7 @@ type command struct {
 	MemberID   string `json:"member_id"`
 	MemberAddr string `json:"member_addr"`
 	Count      int
+	GameId     matchStruct
 	PlayerID   int    `json:"player_id,omitempty"`
     PlayerCards      []int  `json:"player_cards,omitempty"`
 	Cards      [][3]int  `json:"cards,omitempty"`
@@ -31,6 +32,7 @@ type Store struct {
 	data     map[string]string             // Dados chave-valor replicados
 	members  map[string]raft.ServerAddress // Lista sincronizada de membros do cluster
 	players  map[int]Player
+	matchHistory  map[string]matchStruct
 	gameQueue  []int
 	Cards    [][3]int
 	count    int 
@@ -45,6 +47,7 @@ func NewStore() *Store {
 		data:    make(map[string]string),
 		members: make(map[string]raft.ServerAddress),
 		players: make(map[int]Player),
+		matchHistory: make(map[string]matchStruct),
 		count: 0,
 		Cards: setupPacks(900),
 	}
@@ -105,8 +108,9 @@ func (s *Store) Apply(log *raft.Log) interface{} {
 		fmt.Println("[FSM Apply] join game queue", c.PlayerID, "queue=", s.gameQueue)
 		return nil
 	case "create_game":
+		s.matchHistory[c.GameId.selfId] = c.GameId
 		s.gameQueue = c.GameQueue
-		fmt.Println("[FSM Apply] created game", "queue=", c.GameQueue)
+		fmt.Println("[FSM Apply] created game", "queue=", c.GameQueue, c.GameId)
 		return nil
 	default:
 		// Retorna um erro se o comando for desconhecido
