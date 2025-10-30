@@ -803,9 +803,26 @@ func (s *Store) handleSendGameResult(c *gin.Context) {
 		ClientID int `json:"client_id"`
 		Card int `json:"card"`
 		GameID string `json:"game"`
+		Extra string `json:"extra"`
 	}
 	if err := json.Unmarshal(req.Payload, &play); err != nil {
 		c.JSON(http.StatusBadRequest, NewErrorResponse(req.RequestID, s.NodeID, "INVALID_PLAYER", err.Error()))
+		return
+	}
+	
+
+	if play.Extra=="" {
+		response2 := map[string]any{
+			"client_id" : play.ClientID,
+			"result"	: "win",
+			"card"		: 0,
+		}
+		s.checkGame(response2)
+
+		c.JSON(http.StatusOK, NewSuccessResponse("none", s.NodeID, gin.H{
+			"done": false,
+		}))
+
 		return
 	}
 

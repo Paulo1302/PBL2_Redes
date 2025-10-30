@@ -330,14 +330,16 @@ func ClientJoinGameQueue(nc *nats.Conn, s *Store) {
 		fmt.Println("JOINED Q1", len(s.gameQueue))
 		if len(s.gameQueue) == 2 {
 			fmt.Println("JOINED Q2")
-
+			var v1, v2 bool
 			var p1, p2 int
 			if s.RaftLog.State() == raft.Leader {
 				x, _ := s.CreateMatch()
 				fmt.Println("IM LEADER")
 				p1 = x.P1
 				p2 = x.P2
-				fmt.Println("CHECKING PLAYERS: ", s.checkMatchmaking(p1, x), s.checkMatchmaking(p2, x))
+				v1 = s.checkMatchmaking(p1, x)
+				v2 = s.checkMatchmaking(p2, x)
+				fmt.Println("CHECKING PLAYERS: ", v1, v2)
 				fmt.Println("checked both players")
 			} else {
 
@@ -346,10 +348,39 @@ func ClientJoinGameQueue(nc *nats.Conn, s *Store) {
 					OperationType: "matchmaking",
 					Payload:       nil,
 				}
-				s.forwardToLeaderViaREST(req1)
+				resp := s.forwardToLeaderViaREST(req1)
+				var payload1 map[string]any
+				json.Unmarshal(resp.Payload, &payload1)
+				v1 = payload1["ready1"].(bool)
+				v2 = payload1["ready2"].(bool)
+				fmt.Println("CHECKING PLAYERS: ", v1, v2)
 			}
 			time.Sleep(500 * time.Millisecond)
-
+			if !v1 {
+				if s.RaftLog.State() == raft.Leader {
+					response2 := map[string]any{
+						"client_id" : p2,
+						"result"	: "win",
+						"card"		: 0,
+					}
+					s.checkGame(response2)
+				}else {
+					msg := map[string]any{
+						"client_id": p2,
+						"card":      0,
+						"game":      "",
+						"extra":	 "smt",
+					}
+					data,_:=json.Marshal(msg)
+					req1 := StandardRequest{
+						RequestID:     fmt.Sprintf("%d", time.Now().UnixNano()),
+						OperationType: "send_game_result",
+						Payload:       data,
+					}
+					s.forwardToLeaderViaREST(req1)
+				}
+			}
+			
 		}
 
 	})
@@ -420,6 +451,22 @@ func ClientPlayCardds(nc *nats.Conn, s *Store) {
 		}
 		
 	})
+}
+
+
+func readyToTrade(id int, enemyCard int) bool {
+	payload := map[string]any{
+		"client_id":	id,
+		"return_card":	enemyCard,
+	}
+	fmt.Println(payload)
+	_, err := RequestMessage(myConnection, "topic.listenTrade", payload, 150*time.Millisecond)
+
+	if err != nil {
+		return false
+	} else {
+		return true
+	}
 }
 
 // func getSmth() map[string]any {

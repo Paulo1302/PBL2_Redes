@@ -25,6 +25,12 @@ type NatsMessage struct {
     Match    matchStruct `json:"match"`     
 }
 
+type TradeCard struct {
+    ClientID int         `json:"client_id"`
+    Err      any		 `json:"err"`
+    Card	 int		 `json:"return_card"`     
+}
+
 
 func BrokerConnect(serverNumber int) *nats.Conn {
 	url := "nats://10.200.54.149:" + strconv.Itoa(serverNumber+4222)
@@ -192,7 +198,60 @@ func RequestFindMatch(nc *nats.Conn, id int) (string, error) {
 	return *match, nil
 }
 
-func RequestTradeCards(nc *nats.Conn, id int, card int) (int, error) {
+
+func RequestTradeCards(nc *nats.Conn, id int, cardToSend int) (int, error) {
+
+	cardValue := 0
+	card := &cardValue
+
+	onQueue := make(chan (int))
+
+	sub, _ := nc.Subscribe("topic.listenTrade", func(msg *nats.Msg) {
+		var natsPayload TradeCard
+		json.Unmarshal(msg.Data, &natsPayload)
+		if natsPayload.ClientID != id {
+			fmt.Println("NOTT")
+			return
+		}
+		if natsPayload.Err != nil {
+			*card = 0
+			onQueue <- -1
+		}
+
+		nc.Publish(msg.Reply, msg.Data)
+		*card = natsPayload.Card
+		onQueue <- 0
+	})
+
+	msg := map[string]any{
+		"client_id": id,
+		"card":cardToSend,
+	}
+	data, _ := json.Marshal(msg)
+	response, err := nc.Request("topic.sendTrade", data, time.Second)
+
+	if err != nil {
+		sub.Unsubscribe()
+		fmt.Println(err.Error())
+		return 0, err
+	}
+
+	json.Unmarshal(response.Data, &msg)
+
+	if msg["err"] != nil {
+		sub.Unsubscribe()
+		return 0, errors.New(msg["err"].(string))
+	}
+
+	if (<-onQueue) == -1 {
+		sub.Unsubscribe()
+		return 0, errors.New("MATCHMAKING QUEUE ERROR")
+	}
+	sub.Unsubscribe()
+	return *card, nil
+}
+
+func RequestTradeCards2(nc *nats.Conn, id int, card int) (int, error) {
 
 	payload := make(map[string]any)
 
