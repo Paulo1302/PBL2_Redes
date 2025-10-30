@@ -811,7 +811,7 @@ func (s *Store) handleSendGameResult(c *gin.Context) {
 	}
 	
 
-	if play.Extra=="" {
+	if play.Extra=="smt" {
 		response2 := map[string]any{
 			"client_id" : play.ClientID,
 			"result"	: "win",

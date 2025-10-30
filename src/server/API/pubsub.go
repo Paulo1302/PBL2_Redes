@@ -353,6 +353,8 @@ func ClientJoinGameQueue(nc *nats.Conn, s *Store) {
 				json.Unmarshal(resp.Payload, &payload1)
 				v1 = payload1["ready1"].(bool)
 				v2 = payload1["ready2"].(bool)
+				//p1 = int(payload1["p1"].(float64))
+				p2 = int(payload1["p2"].(float64))
 				fmt.Println("CHECKING PLAYERS: ", v1, v2)
 			}
 			time.Sleep(500 * time.Millisecond)
