@@ -1,118 +1,217 @@
-# PBL2_Redes
-Código do segundo problema do MI de Concorrência e Conectividade TEC502
+# 🃏 Jogo de Cartas Multiplayer Distribuído com Raft e NATS
 
+Este projeto implementa um **servidor de jogo de cartas multiplayer distribuído**, **tolerante a falhas** e de **alta disponibilidade**, escrito em **Go**.
 
+O sistema é construído sobre uma **arquitetura híbrida** que combina:
 
-Referências:
+* **Raft** (para consenso e consistência de estado),
+* **API REST interna** (para comunicação entre servidores),
+* **Broker de mensageria NATS** (para comunicação com o cliente).
 
-[Utilização de PUB-SUB](https://nats.io/)
+---
 
-[Framework](https://gin-gonic.com/)
+## 🧱 Visão Geral da Arquitetura
 
-[Lib para implementação da comunicação entre servidores](https://hazelcast.com/developers/clients/go/)
+A arquitetura do servidor é composta por **três camadas de comunicação** distintas que trabalham em conjunto:
 
+### ⚙️ Consenso (Raft)
 
+O **"coração"** do sistema.
+Todos os nós do servidor formam um cluster Raft.
+Todo o estado crítico do jogo — **listas de jogadores, inventários de cartas, estoque de pacotes, filas de pareamento** — é armazenado em uma **Máquina de Estado Replicada (FSM)** (`store.go`) e é 100% consistente em todos os nós.
+Apenas o **nó Líder** do Raft pode fazer alterações no estado.
 
-DETERMINAMOS:
+---
 
-portas do servidores: já vão estar hardcoded
-jogo: 3 cartas por usuário (NUMERO INTEIRO), qm tiver a maior ganha
+### 💬 Comunicação Cliente-Servidor (NATS Pub/Sub)
 
-jogadores só vão conectar a um servidor predeterminado 
+Os **clientes (`client/main.go`)** são “burros”:
+Eles **não sabem** qual servidor é o líder ou quantos servidores existem.
+Eles se comunicam **exclusivamente com o broker NATS**.
 
-REQUISICOES (client-side):
-criar conta
-logar
+Exemplo:
 
-abrir pacote
-ver cartas
-trocar cartas
-entrar em partida (fila compartilhada)
+* Para realizar uma ação (ex: *Abrir Pacote*), o cliente publica uma mensagem no tópico `topic.openPack` e aguarda a resposta (`pubsub.RequestOpenPack`).
 
-jogar carta (botar timer, se não jogar sai da partida)
-desistencia
+---
 
-Guia de Compilação e Execução (Docker)
+### 🌐 Comunicação Servidor-Servidor (API REST)
 
-Este projeto utiliza Docker com um script de entrypoint para descobrir automaticamente o IP do host, permitindo que os nós do cluster se conectem em diferentes máquinas sem a necessidade de alterar o código-fonte.
-Pré-requisitos
+Esta é a **“cola”** que liga o NATS ao Raft.
 
-Certifique-se de que os seguintes arquivos existem no seu projeto:
+* Quando um cliente envia uma mensagem NATS, **qualquer nó** do servidor pode recebê-la.
+* Se o nó que a recebe for o **Líder**, ele processa e aplica a mudança no Raft.
+* Se for um **Seguidor**, ele usa `forwardToLeaderViaREST` (`server-api.go`) para encaminhar a solicitação via **HTTP** para o Líder.
+  O Líder processa e devolve a resposta pelo mesmo caminho.
 
-    server/main.go (O seu código-fonte principal)
+➡️ Este modelo garante:
 
-    server/docker/server.dockerfile (O Dockerfile que inclui o entrypoint.sh)
+* **Alta disponibilidade:** clientes podem se conectar a qualquer nó.
+* **Tolerância a falhas:** o Raft mantém o estado consistente entre os nós.
 
-    server/docker/entrypoint.sh (O script que descobre o IP do host e injeta a flag --raft-addr)
+---
 
-Passo 1: Construir a Imagem (Uma Vez)
+## 🧩 Principais Tecnologias
 
-Primeiro, construa a sua imagem Docker. Esta única imagem será usada para o líder e para todos os followers.
+| Tecnologia                  | Função                                          |
+| --------------------------- | ----------------------------------------------- |
+| **Go (Golang)**             | Linguagem principal para servidor e cliente     |
+| **NATS**                    | Broker de mensageria (Pub/Sub cliente-servidor) |
+| **Raft (hashicorp/raft)**   | Consenso e replicação de estado (FSM)           |
+| **Gin**                     | Framework para API REST interna                 |
+| **Docker & Docker Compose** | Containerização e orquestração                  |
+| **Make**                    | Automação de build e execução                   |
 
-Execute este comando a partir do seu diretório server/:
-Bash
+---
 
-# (Use --no-cache se você alterou o main.go ou entrypoint.sh)
-docker build -f docker/server.dockerfile -t meu-servidor-raft .
+## ⚙️ Pré-requisitos
 
-Passo 2: Iniciar o Servidor Líder
+* **Go** (v1.24 ou superior)
+* **Docker** e **Docker Compose**
+* **make**
 
-O líder usará o CMD padrão do seu server.dockerfile.
+---
 
-Bash
+## ⚠️ Atenção: Configuração Manual de IP Obrigatória
 
-# (Opcional) Limpe qualquer líder antigo:
-docker rm raft-leader
+Este projeto requer **configuração manual de IPs** antes da execução.
+O `makefile` e os arquivos `pubsub.go` contêm IPs de desenvolvimento **hardcoded**.
 
-# 1. Inicie o Líder
-docker run -d --name raft-leader --network=host meu-servidor-raft
+---
 
-    --network=host: É crucial. Permite que o entrypoint.sh descubra o IP real da sua máquina (ex: 192.168.0.106).
+### 🧭 Passo 1: Configurar o IP do Broker NATS
 
-    O entrypoint.sh detetará a porta padrão (7000) e o IP do host, executando o server_app com as flags --raft-addr "IP_DO_LIDER:7000" --id "1" --bootstrap "true" ....
+1. Inicie o NATS:
 
-Passo 3: Descobrir o IP do Líder
+   ```bash
+   make broker
+   ```
+2. Descubra o IP da máquina que está rodando o broker (ex: `192.168.0.21`).
+3. Atualize o IP nos seguintes arquivos:
 
-Você precisará do IP real do líder para que os followers possam encontrá-lo. Na máquina do líder, execute:
-Bash
+#### 🔹 Servidor
 
-ip a | grep 'inet '
+Arquivo: `server/API/pubsub.go`
 
-(Procure o seu IP de rede principal, por exemplo: 192.168.0.106. Vamos chamar isto de IP_DO_LIDER.)
+```go
+url := "nats://10.200.54.149:" + strconv.Itoa(serverNumber+4222)
+```
 
-Passo 4: Iniciar os Followers
+➡️ **Mude:** `10.200.54.149` → IP do broker.
 
-Agora, inicie os seus dois followers. Você deve substituir IP_DO_LIDER pelo IP que encontrou no Passo 3.
+#### 🔹 Cliente
 
-Importante: Se estiver a iniciar os followers na mesma máquina que o líder (para testes), você deve usar portas diferentes para cada um. Se eles estiverem em máquinas diferentes, pode usar as mesmas portas (8080/7000).
+Arquivo: `client/API/pubsub.go`
 
-Cenário A: Followers na MESMA Máquina (Modo de Teste)
+```go
+url := "nats://10.200.54.149:" + strconv.Itoa(serverNumber+4222)
+```
 
-Bash
+➡️ **Mude:** `10.200.54.149` → IP do broker.
 
-# (Opcional) Limpe followers antigos:
-docker rm raft-follower1 raft-follower2
+---
 
-# 1. Inicie o Follower 1 (em portas 8081/7001)
-docker run -d --name raft-follower1 --network=host meu-servidor-raft --id "follower1" --port 8081 --raft-port 7001 --peers "IP_DO_LIDER"
+### 🧭 Passo 2: Configurar o IP do Líder (Peers) no Makefile
 
-# 2. Inicie o Follower 2 (em portas 8082/7002)
-docker run -d --name raft-follower2 --network=host meu-servidor-raft --id "follower2" --port 8082 --raft-port 7002 --peers "IP_DO_LIDER"
+O `makefile` usa `--network=host`, ou seja, os contêineres usam o IP da máquina host.
+Descubra o IP da sua máquina (ex: `192.168.0.21`) e atualize no `makefile`.
 
-    O entrypoint.sh detetará as flags --raft-port 7001 e --raft-port 7002, anunciando os endereços corretos ao líder.
+Exemplo de trecho:
 
-Cenário B: Followers em Máquinas DIFERENTES (Modo de Produção)
+```makefile
+run-follower1:
+    @echo "Starting server..."
+    @docker run -d --name raft-follower1 --network=host meu-servidor-raft \
+      --id "follower1" --port 8081 --raft-port 7001 --peers "192.168.0.21"
+      # ^^^^^^^^^^^^^ MUDE ESTE IP
 
-(Execute isto nas suas outras máquinas. Certifique-se de que a imagem meu-servidor-raft existe nelas.)
-Bash
+run-follower2:
+    @echo "Starting server..."
+    @docker run -d --name raft-follower2 --network=host meu-servidor-raft \
+      --id "follower2" --port 8082 --raft-port 7002 --peers "192.168.0.21"
+      # ^^^^^^^^^^^^^ MUDE ESTE IP
+```
 
-# (Opcional) Limpe followers antigos:
-docker rm raft-follower1 raft-follower2
+---
 
-# 1. Inicie o Follower 1 (na Máquina 2)
-docker run -d --name raft-follower1 --network=host meu-servidor-raft --id "follower1" --port 8080 --raft-port 7000 --peers "IP_DO_LIDER"
+## 🚀 Como Executar (Localmente)
 
-# 2. Inicie o Follower 2 (na Máquina 3)
-docker run -d --name raft-follower2 --network=host meu-servidor-raft --id "follower2" --port 8080 --raft-port 7000 --peers "IP_DO_LIDER"
+Após a **configuração de IPs**, siga os passos abaixo (cada um em um terminal separado).
 
-    O entrypoint.sh em cada máquina descobrirá o IP dessa máquina e anunciá-lo-á corretamente ao líder.
+### 🧩 Terminal 1: Iniciar o Broker NATS
+
+```bash
+make broker
+```
+
+### 🧩 Terminal 2: Construir e Iniciar o Cluster Raft
+
+```bash
+# Construir imagem Docker
+make build
+
+# Iniciar o nó Líder
+make run-leader
+
+# Aguardar alguns segundos, depois iniciar os seguidores
+make run-follower1
+make run-follower2
+```
+
+### 🧩 Terminal 3: Executar o Cliente
+
+```bash
+cd client/
+go run .
+```
+
+O cliente de console será iniciado e permitirá **criar conta, logar e jogar**.
+
+---
+
+## 🧪 Testes
+
+### ▶️ Teste de Cliente
+
+```bash
+make dev-client
+```
+
+### 🩺 Teste de API (Saúde)
+
+```bash
+make test
+```
+
+*(Pode estar desatualizado)*
+
+---
+
+## 📁 Estrutura do Repositório (Simplificada)
+
+```
+/
+├── client/
+│   ├── API/
+│   │   └── pubsub.go     # SDK do cliente para NATS
+│   └── main.go           # Aplicação CLI do cliente
+│
+└── server/
+    ├── API/
+    │   ├── pubsub.go     # Lógica NATS (recebimento)
+    │   ├── server-api.go # API REST interna (encaminhamento)
+    │   ├── store.go      # FSM do Raft
+    │   └── game_logic.go # Lógica de negócios
+    │
+    ├── docker/
+    │   ├── server.dockerfile
+    │   ├── entrypoint.sh
+    │   └── ...
+    │
+    ├── main.go           # Inicializa Raft, NATS e REST
+    └── makefile          # Build e execução
+```
+
+---
+
+Deseja que eu adicione também **blocos de badges** (ex: Go version, Docker, License) e um **sumário automático** no início do README? Isso deixaria o arquivo mais profissional.
