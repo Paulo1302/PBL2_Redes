@@ -211,7 +211,3 @@ make test
     ├── main.go           # Inicializa Raft, NATS e REST
     └── makefile          # Build e execução
 ```
-
----
-
-Deseja que eu adicione também **blocos de badges** (ex: Go version, Docker, License) e um **sumário automático** no início do README? Isso deixaria o arquivo mais profissional.
