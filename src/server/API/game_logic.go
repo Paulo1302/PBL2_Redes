@@ -170,6 +170,51 @@ func (s *Store) JoinQueue(id int) (int, error) {
 	return player.Id, nil
 }
 
+func (s *Store) JoinTradeQueue(id int, card int) (int, error) {
+	s.mu.Lock()
+	
+	player, ok := s.players[id]
+    
+	if !ok {
+        return 0, fmt.Errorf("player with ID %d not found", id)
+    }
+
+    // 1. Find the index of the 'card' to remove
+    indexToRemove := -1
+    for i, c := range player.Cards {
+        if c == card {
+            indexToRemove = i
+            break // Found the card, so we can stop searching
+        }
+    }
+
+    if indexToRemove == -1 {
+        // Handle case where the card is not in the player's hand
+        return 0, fmt.Errorf("card %d not found for player %d", card, id)
+    }
+
+    player.Cards = append(player.Cards[:indexToRemove], player.Cards[indexToRemove+1:]...)
+
+    s.players[id] = player
+
+	s.mu.Unlock()
+	fmt.Println("DEBUG1")
+	resp, err := s.applyLogInternal("join_card_queue", "", "", "", "", &player, card, nil, []int{}, matchStruct{})
+	fmt.Println("DEBUG2")
+	if err != nil {
+		return 0, err
+	}
+
+	// se applyLogInternal retornar o valor do FSM.Apply(), ótimo
+	if resp != nil {
+		if id, ok := resp.(int); ok {
+			return id, nil
+		}
+	}
+
+	return player.Id, nil
+}
+
 func (s *Store) CreateMatch() (matchStruct, error) {
 	s.mu.Lock()
 	
@@ -184,6 +229,26 @@ func (s *Store) CreateMatch() (matchStruct, error) {
 	s.mu.Unlock()
 	fmt.Println("DEBUG1")
 	_, err := s.applyLogInternal("create_game", "", "", "", "", nil, 0, nil, newQueue, x)
+	fmt.Println("DEBUG2")
+	if err != nil {
+		return matchStruct{}, err
+	}
+
+	// se applyLogInternal retornar o valor do FSM.Apply(), ótimo
+
+	return x, nil
+}
+
+func (s *Store) CreateTrade() (int, error) {
+	s.mu.Lock()
+	
+	p1:=s.tradeQueue[0]
+	p2:=s.tradeQueue[1]
+	
+	newQueue := s.gameQueue[2:]
+	s.mu.Unlock()
+	fmt.Println("DEBUG1")
+	_, err := s.applyLogInternal("create_trade", "", "", "", "", nil, 0, nil, newQueue, x)
 	fmt.Println("DEBUG2")
 	if err != nil {
 		return matchStruct{}, err

@@ -471,6 +471,104 @@ func readyToTrade(id int, enemyCard int) bool {
 	}
 }
 
+func ClientTradeCards(nc *nats.Conn, s *Store) {
+	nc.Subscribe("topic.sendTrade", func(m *nats.Msg) {
+		fmt.Println("REQUEST TRADE QUEUE")
+		var payload map[string]any
+		json.Unmarshal(m.Data, &payload)
+
+		if s.RaftLog.State() == raft.Leader {
+			fmt.Println("IM LEADER")
+			_, err := s.JoinTradeQueue(int(payload["client_id"].(float64)), int(payload["card"].(float64)))
+			fmt.Println("Added to queue")
+			if err != nil {
+				nc.Publish(m.Reply, []byte(`{"err":"RAFT_APPLY_ERROR"}`))
+				fmt.Println("SHIT")
+				return
+			}
+			payload := map[string]any{
+				"status":    "Added to queue",
+				"err":       nil,
+				"node":      s.NodeID,
+				"is_leader": true,
+			}
+			fmt.Println("YEAH")
+			data, _ := json.Marshal(payload)
+			nc.Publish(m.Reply, data)
+		} else {
+			req := StandardRequest{
+				RequestID:     fmt.Sprintf("%d", time.Now().UnixNano()),
+				OperationType: "join_trade_queue",
+				Payload:       m.Data,
+			}
+			resp := s.forwardToLeaderViaREST(req)
+			data, _ := json.Marshal(resp.Payload)
+			nc.Publish(m.Reply, data)
+		}
+		time.Sleep(100 * time.Millisecond)
+		fmt.Println("JOINED Q1", len(s.tradeQueue))
+		if len(s.tradeQueue) == 2 {
+			fmt.Println("JOINED Q2")
+			var v1, v2 bool
+			var p1, p2 int
+			if s.RaftLog.State() == raft.Leader {
+				x, _ := s.CreateMatch()
+				fmt.Println("IM LEADER")
+				p1 = x.P1
+				p2 = x.P2
+				v1 = s.checkMatchmaking(p1, x)
+				v2 = s.checkMatchmaking(p2, x)
+				fmt.Println("CHECKING PLAYERS: ", v1, v2)
+				fmt.Println("checked both players")
+			} else {
+
+				req1 := StandardRequest{
+					RequestID:     fmt.Sprintf("%d", time.Now().UnixNano()),
+					OperationType: "matchmaking",
+					Payload:       nil,
+				}
+				resp := s.forwardToLeaderViaREST(req1)
+				var payload1 map[string]any
+				json.Unmarshal(resp.Payload, &payload1)
+				v1 = payload1["ready1"].(bool)
+				v2 = payload1["ready2"].(bool)
+				//p1 = int(payload1["p1"].(float64))
+				p2 = int(payload1["p2"].(float64))
+				fmt.Println("CHECKING PLAYERS: ", v1, v2)
+			}
+			time.Sleep(500 * time.Millisecond)
+			if !v1 {
+				if s.RaftLog.State() == raft.Leader {
+					response2 := map[string]any{
+						"client_id" : p2,
+						"result"	: "win",
+						"card"		: 0,
+					}
+					s.checkGame(response2)
+				}else {
+					msg := map[string]any{
+						"client_id": p2,
+						"card":      0,
+						"game":      "",
+						"extra":	 "smt",
+					}
+					data,_:=json.Marshal(msg)
+					req1 := StandardRequest{
+						RequestID:     fmt.Sprintf("%d", time.Now().UnixNano()),
+						OperationType: "send_game_result",
+						Payload:       data,
+					}
+					s.forwardToLeaderViaREST(req1)
+				}
+			}
+			
+		}
+
+	})
+}
+
+
+
 // func getSmth() map[string]any {
 // 	resp, _ := http.Get("http://localhost:8080/status")
 // 	bod,_:=io.ReadAll(resp.Body)

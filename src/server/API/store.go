@@ -34,6 +34,8 @@ type Store struct {
 	players      map[int]Player
 	matchHistory map[string]matchStruct
 	gameQueue    []int
+	tradeQueue   []struct{player int 
+		card int}
 	Cards        [][3]int
 	count        int
 	RaftLog      *raft.Raft // Referência à instância Raft (preenchida pelo main)
@@ -49,6 +51,8 @@ func NewStore() *Store {
 		players:      make(map[int]Player),
 		matchHistory: make(map[string]matchStruct),
 		gameQueue:    make([]int, 0),
+		tradeQueue:   make([]struct{player int
+			 card int}, 0),
 		count:        0,
 		Cards:        setupPacks(900),
 	}
@@ -120,6 +124,10 @@ func (s *Store) Apply(log *raft.Log) interface{} {
 	case "play_cards":
 		s.matchHistory[c.GameId.SelfId] = c.GameId
 		fmt.Println("[FSM Apply] card played", "game=", c.GameId)
+		return nil
+	case "join_card_queue":
+		s.tradeQueue = append(s.tradeQueue, struct{player int; card int}{player: c.PlayerID, card: c.Count})
+		fmt.Println("[FSM Apply] join trade queue", c.PlayerID, "queue=", s.tradeQueue)
 		return nil
 	default:
 		// Retorna um erro se o comando for desconhecido

@@ -105,7 +105,6 @@ func (s *Store) applyLogInternal(op string, key string, value string, memberID s
 	cmd.GameQueue = gameQueue
 	
 	cmd.GameId = gameId	
-	fmt.Println(cmd.GameId)
 
 
 	b, err := json.Marshal(cmd)
@@ -970,6 +969,40 @@ func (s *Store) checkGame(response map[string]any) bool {
 	return ok && result
 }
 
+func (s *Store) handleInternalJoinTradeQueue(c *gin.Context) {
+	var req StandardRequest
+	if err := c.BindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, NewErrorResponse("none", s.NodeID, "INVALID_JSON", err.Error()))
+		return
+	}
+
+	var player struct {
+		ClientID int `json:"client_id"`
+		Card int `json:"card"`
+	}
+	if err := json.Unmarshal(req.Payload, &player); err != nil {
+		c.JSON(http.StatusBadRequest, NewErrorResponse(req.RequestID, s.NodeID, "INVALID_PLAYER", err.Error()))
+		return
+	}
+	fmt.Println(player)
+	if s.RaftLog.State() != raft.Leader {
+		resp := s.forwardToLeaderViaREST(req)
+		c.JSON(http.StatusOK, resp)
+		return
+	}
+
+
+	result, err := s.JoinTradeQueue(player.ClientID, player.Card)
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, NewErrorResponse(req.RequestID, s.NodeID, "RAFT_APPLY_ERROR", err.Error()))
+		return
+	}
+
+	c.JSON(http.StatusOK, NewSuccessResponse(req.RequestID, s.NodeID, gin.H{"status": "Added to queue","player_id": result,"err":nil}))
+}
+
+
 
 
 
@@ -1154,6 +1187,7 @@ func SetupRouter(s *Store) *gin.Engine {
 		internalGroup.POST("/play_cards", s.handleInternalPlayCards)
 		internalGroup.POST("/check_game", s.handleInternalCheckGame)
 		internalGroup.POST("/send_game_result", s.handleSendGameResult)
+		internalGroup.POST("/join_game_queue", s.handleInternalJoinGameQueue)
 		// Adicionar outros endpoints internos aqui (ex: POST /internal/openPack usando StandardRequest/StandardResponse)
 		// internalGroup.POST("/openpack", s.handleInternalOpenPack) // Exemplo
 	}
